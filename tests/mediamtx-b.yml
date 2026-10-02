@@ -1,0 +1,19 @@
+# Second RTMP server on another port: the one the chaos test kills.
+logLevel: info
+logDestinations: [stdout]
+api: no
+rtsp: no
+webrtc: no
+hls: no
+srt: no
+moq: no
+rtmp: yes
+rtmpAddress: 127.0.0.1:1936
+pathDefaults:
+  record: yes
+  recordPath: tests/out/srv-b/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordSegmentDuration: 1h
+  recordPartDuration: 1s
+paths:
+  all_others:
