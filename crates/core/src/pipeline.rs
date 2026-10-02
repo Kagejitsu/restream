@@ -17,7 +17,6 @@
 //! Everything downstream of the encoders is encoded data, so the preview is
 //! the only extra raw-video cost.
 
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -60,7 +59,7 @@ pub struct Pipeline {
     audio_tee_pad: Option<gst::Pad>,
     pub video_encoder: String,
     pub audio_encoder: Option<String>,
-    pub record_path: Option<String>,
+    pub has_audio: bool,
 }
 
 /// Outputs created when the pipeline is built.
@@ -98,20 +97,15 @@ fn pick(requested: &str, preference: &[&str], what: &str) -> Result<String> {
 }
 
 impl Pipeline {
-    /// Build the pipeline for `profile`. `record_path` enables the recording
-    /// branch from the start (dynamic start/stop lands in M2).
-    pub fn build(
-        profile: &Profile,
-        preview: Arc<PreviewSlot>,
-        stats: StatsBus,
-        record_path: Option<&Path>,
-    ) -> Result<(Self, Outputs)> {
+    /// Build the pipeline for `profile`. Recording is attached separately
+    /// (see [`crate::record::RecordBranch`]).
+    pub fn build(profile: &Profile, preview: Arc<PreviewSlot>, stats: StatsBus) -> Result<(Self, Outputs)> {
         let enc = &profile.encoder;
         let venc = pick(&enc.video_encoder, VIDEO_ENCODER_PREFERENCE, "video")?;
         let has_audio = !matches!(profile.input.audio, AudioSource::None);
         let aenc = if has_audio { Some(pick(&enc.audio_encoder, AUDIO_ENCODER_PREFERENCE, "audio")?) } else { None };
 
-        let desc = describe(profile, &venc, aenc.as_deref(), record_path)?;
+        let desc = describe(profile, &venc, aenc.as_deref())?;
         debug!(target: "pipeline", "launch: {desc}");
         let el = gst::parse::launch(&desc).context("building pipeline")?;
         let pipeline = el.downcast::<gst::Pipeline>().map_err(|_| anyhow!("not a pipeline"))?;
@@ -137,8 +131,8 @@ impl Pipeline {
         hook_flv_sink(&pipeline, tx.clone(), meta, has_audio)?;
         hook_preview_sink(&pipeline, preview)?;
 
-        // --- audio offset via pad offset on the audio tee ---
-        let audio_tee_pad = pipeline.by_name("at").and_then(|t| t.static_pad("sink"));
+        // --- audio offset via pad offset (source pads only, per GStreamer) ---
+        let audio_tee_pad = pipeline.by_name("aoff").and_then(|t| t.static_pad("src"));
         if let Some(p) = &audio_tee_pad {
             p.set_offset(profile.input.audio_offset_ms * 1_000_000);
         }
@@ -164,14 +158,26 @@ impl Pipeline {
                 audio_tee_pad,
                 video_encoder: venc,
                 audio_encoder: aenc,
-                record_path: record_path.map(|p| p.display().to_string()),
+                has_audio,
             },
             Outputs { inbound: rx },
         ))
     }
 
+    /// The underlying GStreamer pipeline (for attaching branches).
+    pub fn gst(&self) -> &gst::Pipeline {
+        &self.pipeline
+    }
+
     pub fn start(&self) -> Result<()> {
         self.pipeline.set_state(gst::State::Playing).context("starting pipeline")?;
+        // Wait for the state change to actually complete before anyone
+        // attaches branches; a live pipeline reaches PLAYING without preroll.
+        let (res, current, pending) = self.pipeline.state(gst::ClockTime::from_seconds(5));
+        match res {
+            Ok(_) if current == gst::State::Playing => {}
+            _ => bail!("pipeline did not reach PLAYING (state {current:?}, pending {pending:?}, result {res:?})"),
+        }
         info!(target: "pipeline", "playing (video: {}, audio: {:?})", self.video_encoder, self.audio_encoder);
         Ok(())
     }
@@ -191,8 +197,10 @@ impl Pipeline {
     }
 
     pub fn stop(&mut self) {
+        if self.bus_stop.swap(true, Ordering::Relaxed) {
+            return; // already stopped
+        }
         let _ = self.pipeline.set_state(gst::State::Null);
-        self.bus_stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.bus_thread.take() {
             let _ = t.join();
         }
@@ -290,7 +298,7 @@ fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn describe(profile: &Profile, venc: &str, aenc: Option<&str>, record: Option<&Path>) -> Result<String> {
+fn describe(profile: &Profile, venc: &str, aenc: Option<&str>) -> Result<String> {
     let e = &profile.encoder;
     let (vsrc, asrc) = sources(profile)?;
     let overlay = if profile.input.burn_in_clock {
@@ -316,7 +324,7 @@ fn describe(profile: &Profile, venc: &str, aenc: Option<&str>, record: Option<&P
     // audio
     if let (Some(asrc), Some(aenc)) = (asrc, aenc) {
         d.push_str(&format!(
-            " {asrc} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 leaky=downstream ! audioconvert ! audioresample ! audio/x-raw,rate={rate},channels={ch} ! tee name=at \
+            " {asrc} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 leaky=downstream ! audioconvert ! audioresample ! audio/x-raw,rate={rate},channels={ch} ! identity name=aoff ! tee name=at \
              at. ! queue ! level name=lvl interval=100000000 ! fakesink sync=false \
              at. ! queue ! {aenc} name=aenc ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! tee name=eat \
              eat. ! queue ! flv.audio ",
@@ -326,14 +334,6 @@ fn describe(profile: &Profile, venc: &str, aenc: Option<&str>, record: Option<&P
     }
     // single interleaved FLV stream → Rust core
     d.push_str(" flvmux streamable=true name=flv ! appsink name=fsink sync=false max-buffers=0 ");
-    // recording
-    if let Some(path) = record {
-        let loc = escape(&path.display().to_string());
-        d.push_str(&format!(" matroskamux name=mux ! filesink location=\"{loc}\" et. ! queue ! mux.video_0 "));
-        if aenc.is_some() {
-            d.push_str(" eat. ! queue ! mux.audio_0 ");
-        }
-    }
     Ok(d)
 }
 
@@ -549,8 +549,8 @@ mod tests {
     fn description_contains_expected_branches() {
         let mut p = Profile::default();
         p.input.burn_in_clock = true;
-        let d = describe(&p, "x264enc", Some("fdkaacenc"), Some(Path::new("/tmp/x.mkv"))).unwrap();
-        for needle in ["videotestsrc", "timeoverlay", "tee name=vt", "x264enc name=venc", "flv.video", "appsink name=psink", "fdkaacenc name=aenc", "flv.audio", "flvmux streamable=true name=flv", "appsink name=fsink", "level name=lvl", "matroskamux name=mux", "mux.video_0", "mux.audio_0"] {
+        let d = describe(&p, "x264enc", Some("fdkaacenc")).unwrap();
+        for needle in ["videotestsrc", "timeoverlay", "tee name=vt", "x264enc name=venc", "flv.video", "appsink name=psink", "fdkaacenc name=aenc", "flv.audio", "flvmux streamable=true name=flv", "appsink name=fsink", "level name=lvl", "tee name=et", "tee name=eat"] {
             assert!(d.contains(needle), "missing {needle} in {d}");
         }
     }
@@ -559,9 +559,9 @@ mod tests {
     fn no_audio_has_no_audio_branches() {
         let mut p = Profile::default();
         p.input.audio = AudioSource::None;
-        let d = describe(&p, "x264enc", None, None).unwrap();
+        let d = describe(&p, "x264enc", None).unwrap();
         assert!(!d.contains("aenc"));
-        assert!(!d.contains("matroskamux"));
+        assert!(!d.contains("flv.audio"));
     }
 
     #[test]

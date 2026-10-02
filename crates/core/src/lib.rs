@@ -20,6 +20,7 @@ pub mod fanout;
 pub mod packet;
 pub mod pipeline;
 pub mod preview;
+pub mod record;
 pub mod stats;
 
 pub use config::Profile;

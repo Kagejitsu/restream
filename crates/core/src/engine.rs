@@ -29,6 +29,7 @@ use crate::config::Profile;
 use crate::fanout::{self, DestSpec, Outbound, ReleaseCommand, ReleaserConfig};
 use crate::pipeline::Pipeline;
 use crate::preview::PreviewSlot;
+use crate::record::{self, RecordBranch};
 use crate::stats::{StatsBus, StatsEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,11 +49,16 @@ struct Session {
     cmd_tx: mpsc::UnboundedSender<ReleaseCommand>,
     stop_tx: watch::Sender<bool>,
     monitor: JoinHandle<()>,
+    recorder: Arc<Mutex<Option<RecordBranch>>>,
+    rec_ticker: JoinHandle<()>,
 }
 
 pub struct Engine {
     profile: Mutex<Profile>,
     state: watch::Sender<EngineState>,
+    /// Kept so the channel is never "closed" (a watch send fails and drops
+    /// the value when no receiver exists).
+    state_rx: watch::Receiver<EngineState>,
     stats: StatsBus,
     preview: Arc<PreviewSlot>,
     session: tokio::sync::Mutex<Option<Session>>,
@@ -60,10 +66,11 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(profile: Profile) -> Arc<Self> {
-        let (state, _) = watch::channel(EngineState::Idle);
+        let (state, state_rx) = watch::channel(EngineState::Idle);
         Arc::new(Self {
             profile: Mutex::new(profile),
             state,
+            state_rx,
             stats: StatsBus::new(),
             preview: PreviewSlot::new(),
             session: tokio::sync::Mutex::new(None),
@@ -84,11 +91,11 @@ impl Engine {
     }
 
     pub fn state(&self) -> EngineState {
-        *self.state.borrow()
+        *self.state_rx.borrow()
     }
 
     pub fn watch_state(&self) -> watch::Receiver<EngineState> {
-        self.state.subscribe()
+        self.state_rx.clone()
     }
 
     pub fn stats(&self) -> broadcast::Receiver<StatsEvent> {
@@ -133,11 +140,8 @@ impl Engine {
             bail!("nothing to do: no enabled destinations and recording is off");
         }
 
-        // ---- recording path ----
-        let record_path = if profile.recording.enabled { Some(recording_path(&profile)?) } else { None };
-
         // ---- pipeline ----
-        let (pipeline, outputs) = Pipeline::build(&profile, Arc::clone(&self.preview), self.stats.clone(), record_path.as_deref())?;
+        let (pipeline, outputs) = Pipeline::build(&profile, Arc::clone(&self.preview), self.stats.clone())?;
 
         // ---- fan-out ----
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -171,7 +175,7 @@ impl Engine {
                     match rx.recv().await {
                         Ok(StatsEvent::Delay { on_air: true, .. }) => {
                             if me.state() == EngineState::Filling {
-                                let _ = me.state.send(EngineState::OnAir);
+                                me.state.send_replace(EngineState::OnAir);
                             }
                         }
                         Ok(StatsEvent::Error(_)) => {
@@ -188,13 +192,77 @@ impl Engine {
         };
 
         pipeline.start()?;
-        if let Some(p) = &record_path {
-            self.stats.emit(StatsEvent::Recording { active: true, path: Some(p.display().to_string()), bytes: 0, duration: Duration::ZERO });
+
+        // ---- recording (attached dynamically; also start/stop-able later) ----
+        let recorder: Arc<Mutex<Option<RecordBranch>>> = Arc::new(Mutex::new(None));
+        if profile.recording.enabled {
+            match recording_path(&profile).and_then(|path| {
+                RecordBranch::start(pipeline.gst(), pipeline.has_audio, &path, profile.recording.split_minutes)
+            }) {
+                Ok(b) => *recorder.lock() = Some(b),
+                Err(e) => {
+                    warn!(target: "engine", "recording could not start: {e:#}");
+                    self.stats.emit(StatsEvent::Warning(format!("recording could not start: {e:#}")));
+                }
+            }
         }
-        *guard = Some(Session { pipeline, releaser, dest_tasks, cmd_tx, stop_tx, monitor });
-        let _ = self.state.send(EngineState::Filling);
+        let rec_ticker = {
+            let recorder = Arc::clone(&recorder);
+            let stats = self.stats.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    tick.tick().await;
+                    let (active, path, bytes, duration) = match recorder.lock().as_ref() {
+                        Some(r) => (true, Some(r.path().display().to_string()), r.bytes(), r.elapsed()),
+                        None => (false, None, 0, Duration::ZERO),
+                    };
+                    stats.emit(StatsEvent::Recording { active, path, bytes, duration });
+                }
+            })
+        };
+
+        *guard = Some(Session { pipeline, releaser, dest_tasks, cmd_tx, stop_tx, monitor, recorder, rec_ticker });
+        self.state.send_replace(EngineState::Filling);
         info!(target: "engine", "session started: delay {}s", profile.delay.seconds);
         Ok(())
+    }
+
+    pub async fn is_recording(&self) -> bool {
+        match self.session.lock().await.as_ref() {
+            Some(s) => s.recorder.lock().is_some(),
+            None => false,
+        }
+    }
+
+    /// Start recording the live (undelayed) stream into a new file.
+    pub async fn start_recording(&self) -> Result<PathBuf> {
+        let guard = self.session.lock().await;
+        let Some(s) = guard.as_ref() else { bail!("no session running") };
+        if s.recorder.lock().is_some() {
+            bail!("already recording");
+        }
+        let profile = self.profile.lock().clone();
+        let path = recording_path(&profile)?;
+        let b = RecordBranch::start(s.pipeline.gst(), s.pipeline.has_audio, &path, profile.recording.split_minutes)?;
+        *s.recorder.lock() = Some(b);
+        Ok(path)
+    }
+
+    /// Stop recording and finalise the file(s); streaming continues.
+    pub async fn stop_recording(&self) -> Result<Vec<PathBuf>> {
+        let branch = {
+            let guard = self.session.lock().await;
+            let Some(s) = guard.as_ref() else { bail!("no session running") };
+            s.recorder.lock().take()
+        };
+        let Some(branch) = branch else { bail!("not recording") };
+        let container = self.profile.lock().recording.container.clone();
+        tokio::task::spawn_blocking(move || {
+            let files = branch.stop()?;
+            finish_files(files, &container)
+        })
+        .await?
     }
 
     /// Stop the input now and let the buffered stream play out, then disconnect.
@@ -204,11 +272,11 @@ impl Engine {
         if self.state() == EngineState::Draining {
             return Ok(());
         }
-        let _ = self.state.send(EngineState::Draining);
+        self.state.send_replace(EngineState::Draining);
         info!(target: "engine", "stop (drain): sending EOS");
-        session.pipeline.send_eos();
+        let cmd_tx = session.cmd_tx.clone();
+        send_eos_guarded(session.pipeline.gst().clone(), cmd_tx).await;
         // The pipeline posts EOS → releaser drains → destinations finish.
-        // Give the muxer a bounded time to finalise before tearing down.
         let me = Arc::clone(self);
         tokio::spawn(async move { me.finish_when_drained().await });
         Ok(())
@@ -220,8 +288,8 @@ impl Engine {
         let Some(session) = guard.as_mut() else { return Ok(()) };
         info!(target: "engine", "stop (CUT): discarding buffer");
         let _ = session.cmd_tx.send(ReleaseCommand::Cut);
-        session.pipeline.send_eos();
         let _ = session.stop_tx.send(true);
+        send_eos_guarded(session.pipeline.gst().clone(), session.cmd_tx.clone()).await;
         let me = Arc::clone(self);
         tokio::spawn(async move { me.finish_when_drained().await });
         Ok(())
@@ -265,25 +333,77 @@ impl Engine {
                 warn!(target: "engine", "destination tasks did not finish in time; forcing stop");
                 let _ = s.stop_tx.send(true);
             }
-            // Pipeline teardown blocks: do it off the async runtime.
-            let _ = tokio::task::spawn_blocking(move || s.pipeline.stop()).await;
+            s.rec_ticker.abort();
+            // Pipeline teardown blocks: do it off the async runtime. The
+            // pipeline EOS has already finalised any recording; just collect it.
+            let container = self.profile.lock().recording.container.clone();
+            let recorder = Arc::clone(&s.recorder);
+            let _ = tokio::task::spawn_blocking(move || {
+                s.pipeline.stop();
+                if let Some(b) = recorder.lock().take() {
+                    let files = b.files();
+                    match finish_files(files, &container) {
+                        Ok(f) => info!(target: "engine", "recording saved: {:?}", f),
+                        Err(e) => warn!(target: "engine", "recording post-processing failed: {e:#}"),
+                    }
+                }
+            })
+            .await;
             s.monitor.abort();
         }
         self.preview.clear();
         self.stats.emit(StatsEvent::Recording { active: false, path: None, bytes: 0, duration: Duration::ZERO });
-        let _ = self.state.send(EngineState::Idle);
+        self.state.send_replace(EngineState::Idle);
         info!(target: "engine", "session finished");
     }
 
     /// Block until the session returns to Idle.
     pub async fn wait_idle(&self) {
-        let mut rx = self.state.subscribe();
+        let mut rx = self.state_rx.clone();
         while *rx.borrow() != EngineState::Idle {
             if rx.changed().await.is_err() {
                 return;
             }
         }
     }
+}
+
+/// Send EOS to the pipeline from a blocking thread with a deadline. A
+/// pipeline whose source is wedged can block `send_event` forever; in that
+/// case the session must still be able to end, so the releaser is told to
+/// finish without the pipeline's EOS and the recording is left unfinalised.
+async fn send_eos_guarded(pipeline: gstreamer::Pipeline, cmd_tx: mpsc::UnboundedSender<ReleaseCommand>) {
+    use gstreamer::prelude::*;
+    let send = tokio::task::spawn_blocking(move || pipeline.send_event(gstreamer::event::Eos::new()));
+    match tokio::time::timeout(Duration::from_secs(5), send).await {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => {
+            warn!(target: "engine", "pipeline refused EOS; forcing session end");
+            let _ = cmd_tx.send(ReleaseCommand::ForceEos);
+        }
+        _ => {
+            tracing::error!(target: "engine", "pipeline did not accept EOS within 5 s (wedged); forcing session end");
+            let _ = cmd_tx.send(ReleaseCommand::ForceEos);
+        }
+    }
+}
+
+/// Post-process finished recording files (MP4 remux when requested).
+fn finish_files(files: Vec<PathBuf>, container: &str) -> Result<Vec<PathBuf>> {
+    if container != "mp4" {
+        return Ok(files);
+    }
+    let mut out = Vec::new();
+    for f in files {
+        match record::remux_to_mp4(&f) {
+            Ok(m) => out.push(m),
+            Err(e) => {
+                warn!(target: "engine", "keeping MKV; {e:#}");
+                out.push(f);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn dest_queue_len(p: &Profile) -> usize {

@@ -22,4 +22,5 @@ gstreamer-audio.workspace = true
 restream-rtmp = { path = "../rtmp" }
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

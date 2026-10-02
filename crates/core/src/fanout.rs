@@ -38,6 +38,8 @@ pub enum ReleaseCommand {
     /// Discard the whole buffer now (panic button / hard stop).
     Cut,
     SetDelay(Duration),
+    /// Treat the input as ended even though the pipeline never posted EOS.
+    ForceEos,
 }
 
 /// What destinations receive.
@@ -103,6 +105,10 @@ pub async fn releaser_task(
                     if ring.is_drained() { break; }
                 }
                 Some(ReleaseCommand::SetDelay(d)) => ring.set_delay(d),
+                Some(ReleaseCommand::ForceEos) => {
+                    ring.mark_eos();
+                    if ring.is_drained() { break; }
+                }
                 None => {}
             },
 
@@ -129,6 +135,7 @@ pub async fn releaser_task(
                 }
                 None => {
                     // Pipeline side vanished without EOS (hard stop): nothing more will come.
+                    warn!(target: "fanout", "packet source closed without EOS; draining {} packets", ring.len());
                     ring.mark_eos();
                     if ring.is_drained() { break; }
                 }
@@ -185,7 +192,7 @@ pub async fn releaser_task(
     for d in &dests {
         let _ = d.send(Outbound::Finish).await;
     }
-    debug!(target: "fanout", "releaser finished");
+    info!(target: "fanout", "releaser finished (eos={}, remaining={})", ring.is_eos(), ring.len());
 }
 
 /// Static description of one destination for the task.
