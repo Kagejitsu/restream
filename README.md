@@ -40,6 +40,21 @@ tests/chaos.sh
 ./target/debug/restream-cli run tests/e2e-profile.toml --for 30
 ```
 
+## Cross-build for Windows from Linux (no reboot)
+
+```
+tools/xwin-setup.sh            # once: user-space rustup + cargo-xwin + GStreamer MSVC SDK in a Wine prefix (~3 GB)
+tools/xwin-build.sh [--release]
+BIN=tools/restream-cli-wine tests/e2e.sh 10 30        # the Windows CLI under Wine passes the same proof
+WGPU_BACKEND=vulkan WINEPREFIX=~/.local/share/wineprefixes/restream wine target/x86_64-pc-windows-msvc/debug/restream.exe
+```
+
+Wine runs the Windows build well enough to prove linking, the RTMP path, encoding
+and recording. It does **not** validate Media Foundation / DirectShow capture
+(Wine's emulation of those is incomplete and produces garbled frames even with
+GStreamer's own tools) or hardware encoders. Those still need real Windows.
+Under Wine the GUI needs `WGPU_BACKEND=vulkan` (Wine's DX12 shader compiler rejects egui's shader).
+
 ## Build (Windows, release)
 
 See `tools/win-build.ps1` (prerequisites in the header), then
