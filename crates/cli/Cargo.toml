@@ -1,0 +1,19 @@
+[package]
+name = "restream-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless runner for restream profiles (development, soak tests, servers)."
+
+[[bin]]
+name = "restream-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+toml.workspace = true
+restream-core = { path = "../core" }

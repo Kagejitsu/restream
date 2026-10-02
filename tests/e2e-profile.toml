@@ -1,0 +1,57 @@
+name = "e2e"
+
+[input]
+audio_offset_ms = 0
+burn_in_clock = true
+
+[input.video]
+kind = "test"
+pattern = "ball"
+
+[input.audio]
+kind = "test"
+
+[encoder]
+video_encoder = "x264enc"
+width = 1280
+height = 720
+fps = 30
+bitrate_kbps = 2500
+keyframe_interval_s = 2
+preset = "veryfast"
+bframes = 2
+profile = "high"
+audio_encoder = "auto"
+audio_bitrate_kbps = 128
+audio_sample_rate = 48000
+audio_channels = 2
+
+[delay]
+seconds = 10
+max_megabytes = 512
+max_lag_ms = 2000
+
+[[destinations]]
+name = "Twitch"
+url = "rtmp://127.0.0.1:1935/live"
+key = "twitch"
+enabled = true
+
+[[destinations]]
+name = "YouTube"
+url = "rtmp://127.0.0.1:1935/live"
+key = "youtube"
+enabled = true
+
+[[destinations]]
+name = "Facebook"
+url = "rtmp://127.0.0.1:1935/live"
+key = "facebook"
+enabled = true
+
+[recording]
+enabled = true
+directory = "tests/out"
+filename_template = "{profile}-{date}-{time}"
+container = "mkv"
+split_minutes = 0

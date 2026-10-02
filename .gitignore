@@ -1,0 +1,4 @@
+/target
+/tools/bin/
+*.log
+/tests/out/

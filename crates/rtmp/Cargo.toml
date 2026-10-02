@@ -1,0 +1,19 @@
+[package]
+name = "restream-rtmp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FLV tag construction and an RTMP/RTMPS publishing client. No GStreamer dependencies."
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+parking_lot.workspace = true
+rml_rtmp.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true

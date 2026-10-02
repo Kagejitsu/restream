@@ -1,0 +1,21 @@
+# Local RTMP server standing in for Twitch / YouTube / Facebook in tests.
+# Every incoming stream is recorded so the test can compare what each
+# "platform" received byte-for-byte.
+logLevel: info
+logDestinations: [stdout]
+api: yes
+apiAddress: 127.0.0.1:9997
+rtsp: no
+webrtc: no
+hls: no
+srt: no
+rtmp: yes
+rtmpAddress: 127.0.0.1:1935
+pathDefaults:
+  record: yes
+  recordPath: tests/out/srv/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordSegmentDuration: 1h
+  recordPartDuration: 1s
+paths:
+  all_others:

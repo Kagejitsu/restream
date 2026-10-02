@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/rtmp", "crates/cli", "crates/gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = ""
+authors = ["Kate"]
+
+[workspace.dependencies]
+# --- shared ---
+anyhow = "1"
+thiserror = "2"
+bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+url = "2"
+parking_lot = "0.12"
+
+# --- media ---
+gstreamer = { version = "0.25", features = ["v1_20"] }
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+gstreamer-audio = "0.25"
+
+# --- rtmp ---
+rml_rtmp = "0.8"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+
+# --- gui ---
+eframe = "0.36"
+egui = "0.36"
+keyring = "4"
+
+[profile.release]
+opt-level = 3
+debug = 1            # keep line tables for useful crash logs
+panic = "unwind"     # GUI frames are wrapped in catch_unwind
+lto = "thin"
+codegen-units = 4
