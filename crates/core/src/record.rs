@@ -77,14 +77,13 @@ impl RecordBranch {
         {
             let gate = Arc::clone(&gate);
             vq_sink.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-                if let Some(gst::PadProbeData::Buffer(b)) = &info.data {
-                    if !gate.load(Ordering::Relaxed) {
+                if let Some(gst::PadProbeData::Buffer(b)) = &info.data
+                    && !gate.load(Ordering::Relaxed) {
                         if b.flags().contains(gst::BufferFlags::DELTA_UNIT) {
                             return gst::PadProbeReturn::Drop;
                         }
                         gate.store(true, Ordering::Relaxed);
                     }
-                }
                 gst::PadProbeReturn::Ok
             });
         }
@@ -158,12 +157,11 @@ impl RecordBranch {
         let (tx, rx) = mpsc::channel::<()>();
         let sink_pad = self.final_sink.static_pad("sink").ok_or_else(|| anyhow!("sink pad"))?;
         sink_pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
-            if let Some(gst::PadProbeData::Event(e)) = &info.data {
-                if e.type_() == gst::EventType::Eos {
+            if let Some(gst::PadProbeData::Event(e)) = &info.data
+                && e.type_() == gst::EventType::Eos {
                     let _ = tx.send(());
                     return gst::PadProbeReturn::Remove;
                 }
-            }
             gst::PadProbeReturn::Ok
         });
 

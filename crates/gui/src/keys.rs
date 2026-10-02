@@ -32,11 +32,10 @@ pub fn load(profile: &str, dest: &str) -> Option<String> {
 pub fn hydrate(p: &mut Profile) {
     let name = p.name.clone();
     for d in &mut p.destinations {
-        if d.key.is_empty() {
-            if let Some(k) = load(&name, &d.name) {
+        if d.key.is_empty()
+            && let Some(k) = load(&name, &d.name) {
                 d.key = k;
             }
-        }
     }
 }
 

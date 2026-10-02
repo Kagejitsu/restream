@@ -53,11 +53,10 @@ impl Profile {
     /// Resolve `${ENV}` key references (CLI convenience).
     pub fn resolve_env_keys(&mut self) {
         for d in &mut self.destinations {
-            if let Some(var) = d.key.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
-                if let Ok(v) = std::env::var(var) {
+            if let Some(var) = d.key.strip_prefix("${").and_then(|s| s.strip_suffix('}'))
+                && let Ok(v) = std::env::var(var) {
                     d.key = v;
                 }
-            }
         }
     }
     /// A copy with every stream key blanked, safe to write to disk or logs.

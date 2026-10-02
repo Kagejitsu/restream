@@ -287,8 +287,8 @@ impl App {
                 None => self.live_tex = Some(ctx.load_texture("live", img, TextureOptions::LINEAR)),
             }
         }
-        if self.monitor_on {
-            if let Some(f) = self.engine.monitor_preview().take_newer(self.mon_seq) {
+        if self.monitor_on
+            && let Some(f) = self.engine.monitor_preview().take_newer(self.mon_seq) {
                 self.mon_seq = f.seq;
                 let img = ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
                 match &mut self.mon_tex {
@@ -296,7 +296,6 @@ impl App {
                     None => self.mon_tex = Some(ctx.load_texture("monitor", img, TextureOptions::LINEAR)),
                 }
             }
-        }
     }
 
     fn apply_stat(&mut self, ev: StatsEvent) {
@@ -351,11 +350,10 @@ impl App {
                 EngineState::Draining => ("DRAINING", Color32::from_rgb(200, 120, 30)),
             };
             ui.label(RichText::new(label).color(color).strong().size(18.0));
-            if state == EngineState::Filling {
-                if let Some(d) = self.live.on_air_in {
+            if state == EngineState::Filling
+                && let Some(d) = self.live.on_air_in {
                     ui.label(RichText::new(format!("on air in {}", fmt_dur(d))).color(color));
                 }
-            }
             ui.separator();
             match state {
                 EngineState::Idle => {
@@ -466,11 +464,10 @@ impl App {
                 ui.separator();
             }
         });
-        if let Some((t, e)) = &self.live.last_error {
-            if t.elapsed() < Duration::from_secs(30) {
+        if let Some((t, e)) = &self.live.last_error
+            && t.elapsed() < Duration::from_secs(30) {
                 ui.label(RichText::new(format!("ERROR: {e}")).color(Color32::RED));
             }
-        }
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
@@ -1129,11 +1126,10 @@ fn load_last_profile() -> Profile {
     let name = std::fs::read_to_string(paths::settings_file())
         .ok()
         .and_then(|s| s.lines().find_map(|l| l.strip_prefix("last_profile = ").map(|v| v.trim_matches('"').to_string())));
-    if let Some(n) = name {
-        if let Ok(p) = Profile::load(&paths::profiles_dir().join(format!("{n}.toml"))) {
+    if let Some(n) = name
+        && let Ok(p) = Profile::load(&paths::profiles_dir().join(format!("{n}.toml"))) {
             return p;
         }
-    }
     let mut p = Profile::default();
     p.recording.directory = paths::default_recording_dir();
     p

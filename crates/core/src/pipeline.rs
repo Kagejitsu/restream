@@ -520,15 +520,14 @@ fn bus_loop(bus: gst::Bus, stop: Arc<AtomicBool>, tx: mpsc::UnboundedSender<Inbo
                 stats.emit(StatsEvent::Warning(text));
             }
             MessageView::Element(el) => {
-                if let Some(s) = el.structure() {
-                    if s.name() == "level" {
+                if let Some(s) = el.structure()
+                    && s.name() == "level" {
                         let rms = value_array_f64(s, "rms");
                         let peak = value_array_f64(s, "peak");
                         if !rms.is_empty() {
                             stats.emit(StatsEvent::AudioLevel { rms_db: rms, peak_db: peak });
                         }
                     }
-                }
             }
             _ => {}
         }

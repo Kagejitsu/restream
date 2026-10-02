@@ -280,11 +280,10 @@ pub async fn destination_task(
                     backoff = Duration::from_secs(1);
                     last_error = None;
                     let mut s = Stream { client, base_ms: None, saw_keyframe: false };
-                    if let Some(c) = &codec {
-                        if let Err(e) = send_config(&mut s, c) {
+                    if let Some(c) = &codec
+                        && let Err(e) = send_config(&mut s, c) {
                             warn!(target: "fanout", dest = %spec.name, "config send failed: {e}");
                         }
-                    }
                     stream = Some(s);
                     status = DestStatus::WaitingKeyframe;
                     emit(status, last_bytes, 0.0, 0, reconnects, dropped, &last_error);
@@ -315,16 +314,15 @@ pub async fn destination_task(
             msg = rx.recv() => match msg {
                 Some(Outbound::Prepare) => { armed = true; }
                 Some(Outbound::Codec(c)) => {
-                    if let Some(s) = stream.as_mut() {
-                        if let Err(e) = send_config(s, &c) { warn!(target: "fanout", dest = %spec.name, "config: {e}"); }
-                    }
+                    if let Some(s) = stream.as_mut()
+                        && let Err(e) = send_config(s, &c) { warn!(target: "fanout", dest = %spec.name, "config: {e}"); }
                     codec = Some(c);
                 }
                 Some(Outbound::Packet(p)) => {
                     // Lag flagged by the releaser (our inbox was full): resync on keyframe.
-                    if lag_flag.swap(false, Ordering::Relaxed) {
-                        if let Some(s) = stream.as_mut() {
-                            if s.saw_keyframe {
+                    if lag_flag.swap(false, Ordering::Relaxed)
+                        && let Some(s) = stream.as_mut()
+                            && s.saw_keyframe {
                                 s.saw_keyframe = false;
                                 dropped += 1;
                                 if status != DestStatus::Lagging {
@@ -332,8 +330,6 @@ pub async fn destination_task(
                                     emit(status, last_bytes, 0.0, s.client.media_backlog(), reconnects, dropped, &last_error);
                                 }
                             }
-                        }
-                    }
                     if let Some(s) = stream.as_mut() {
                         match forward(s, &p, &spec) {
                             Ok(true) => {

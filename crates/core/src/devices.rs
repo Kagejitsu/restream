@@ -48,7 +48,7 @@ pub fn enumerate() -> Vec<DeviceInfo> {
             let element = d.create_element(None).ok().and_then(|e| e.factory().map(|f| f.name().to_string()));
             let formats = d
                 .caps()
-                .map(|caps| caps.iter().map(|s| summarize_structure(s)).collect::<Vec<_>>())
+                .map(|caps| caps.iter().map(summarize_structure).collect::<Vec<_>>())
                 .unwrap_or_default();
             DeviceInfo {
                 display_name: d.display_name().to_string(),

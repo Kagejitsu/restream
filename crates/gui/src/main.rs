@@ -33,6 +33,18 @@ fn main() -> anyhow::Result<()> {
         default_hook(info);
     }));
 
+    // Self-contained Windows bundle: plugins live next to the exe.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent() {
+            let plugins = dir.join("gst-plugins");
+            if plugins.is_dir() && std::env::var_os("GST_PLUGIN_PATH").is_none() {
+                // SAFETY: set before any other thread reads the environment.
+                unsafe {
+                    std::env::set_var("GST_PLUGIN_PATH", &plugins);
+                    std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &plugins);
+                }
+            }
+        }
     restream_core::init()?;
     let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(4).build()?);
 

@@ -31,6 +31,17 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with_target(true)
         .init();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent() {
+            let plugins = dir.join("gst-plugins");
+            if plugins.is_dir() && std::env::var_os("GST_PLUGIN_PATH").is_none() {
+                // SAFETY: set before any other thread reads the environment.
+                unsafe {
+                    std::env::set_var("GST_PLUGIN_PATH", &plugins);
+                    std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &plugins);
+                }
+            }
+        }
     restream_core::init()?;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
