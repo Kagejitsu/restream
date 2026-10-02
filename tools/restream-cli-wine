@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Run the cross-built Windows CLI under Wine (smoke tests).
+export WINEPREFIX=$HOME/.local/share/wineprefixes/restream WINEDEBUG=-all WINEPATH='C:\Program Files\gstreamer\1.0\msvc_x86_64\bin'
+exec wine "$(dirname "$0")/../target/x86_64-pc-windows-msvc/${RESTREAM_PROFILE:-debug}/restream-cli.exe" "$@"

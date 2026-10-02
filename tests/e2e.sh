@@ -16,7 +16,7 @@ DELAY=${1:-10}
 RUN=${2:-40}
 GRAB_AT=$((DELAY + 12))            # when to grab frames (must be after on-air)
 OUT=tests/out
-BIN=./target/debug/restream-cli
+BIN=${BIN:-./target/debug/restream-cli}
 MM=./tools/bin/mediamtx
 
 command -v ffmpeg >/dev/null || { echo "ffmpeg required"; exit 2; }
