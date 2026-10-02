@@ -141,6 +141,16 @@ impl App {
         if args.iter().any(|a| a == "--monitor") {
             app.monitor_on = true;
         }
+        if let Some(t) = args.iter().position(|a| a == "--tab").and_then(|i| args.get(i + 1)) {
+            app.tab = match t.as_str() {
+                "input" => Tab::Input,
+                "encoder" => Tab::Encoder,
+                "delay" => Tab::Delay,
+                "recording" => Tab::Recording,
+                "logs" => Tab::Logs,
+                _ => Tab::Destinations,
+            };
+        }
         if args.iter().any(|a| a == "--go-live") {
             app.go_live();
         }
@@ -745,11 +755,11 @@ impl App {
                 });
                 ui.horizontal(|ui| {
                     ui.label("Server");
-                    ui.add(egui::TextEdit::singleline(&mut d.url).desired_width(f32::INFINITY).hint_text("rtmp://host/app or rtmps://host:443/app"));
+                    ui.add(egui::TextEdit::singleline(&mut d.url).desired_width(ui.available_width() - 8.0).hint_text("rtmp://host/app or rtmps://host:443/app"));
                 });
                 ui.horizontal(|ui| {
                     ui.label("Key");
-                    ui.add(egui::TextEdit::singleline(&mut d.key).desired_width(f32::INFINITY).password(!self.show_keys).hint_text("stream key (stored in the OS credential store)"));
+                    ui.add(egui::TextEdit::singleline(&mut d.key).desired_width(ui.available_width() - 8.0).password(!self.show_keys).hint_text("stream key (stored in the OS credential store)"));
                 });
                 ui.horizontal(|ui| {
                     if d.url.starts_with("rtmps://") {
@@ -784,7 +794,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("Folder");
             let mut s = r.directory.display().to_string();
-            if ui.add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY)).changed() {
+            if ui.add(egui::TextEdit::singleline(&mut s).desired_width(ui.available_width() - 90.0)).changed() {
                 r.directory = s.into();
             }
             if ui.small_button("default").clicked() {
@@ -887,7 +897,7 @@ impl eframe::App for App {
             self.status_bar(ui);
             ui.add_space(2.0);
         });
-        egui::Panel::right("side").default_size(520.0).min_size(380.0).resizable(true).show(ui, |ui| {
+        egui::Panel::right("side").default_size(520.0).size_range(380.0..=760.0).resizable(true).show(ui, |ui| {
             ui.add_space(4.0);
             self.profile_bar(ui);
             ui.separator();
