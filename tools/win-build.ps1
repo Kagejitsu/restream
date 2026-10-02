@@ -21,7 +21,7 @@ $env:PKG_CONFIG_PATH = "$gst\lib\pkgconfig"
 $env:PATH = "$gst\bin;" + $env:PATH
 
 Set-Location (Join-Path $PSScriptRoot "..")
-if ($Release) { cargo build --release -p restream-gui -p restream-cli } else { cargo build -p restream-gui -p restream-cli }
+if ($Release) { cargo build --release -p restream-gui -p restream-cli -p restream-launcher } else { cargo build -p restream-gui -p restream-cli -p restream-launcher }
 Write-Host ""
 Write-Host "Built. To run from the tree the GStreamer bin dir must be on PATH (this shell has it)."
 Write-Host "To make a self-contained folder:  tools\win-bundle.ps1"

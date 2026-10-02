@@ -11,14 +11,15 @@ $dist = Join-Path $root "dist"
 
 if (-not (Test-Path "$root\target\release\restream.exe")) { throw "build first: tools\win-build.ps1 -Release" }
 Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path "$dist\gst-plugins" | Out-Null
+New-Item -ItemType Directory -Path "$dist\bin\gst-plugins" | Out-Null
 
-Copy-Item "$root\target\release\restream.exe" $dist
-Copy-Item "$root\target\release\restream-cli.exe" $dist
-# Runtime libraries (gstreamer, glib, codecs, their dependencies). ~150 MB.
-Copy-Item "$gst\bin\*.dll" $dist
-# gst-inspect is handy for support ("what encoders do you have?")
-Copy-Item "$gst\bin\gst-inspect-1.0.exe" $dist -ErrorAction SilentlyContinue
+# root: launchers + docs; bin: real executables beside the runtime DLLs they import
+Copy-Item "$root\target\release\restream-launch-gui.exe" "$dist\Restream.exe"
+Copy-Item "$root\target\release\restream-launch-cli.exe" "$dist\restream-cli.exe"
+Copy-Item "$root\target\release\restream.exe" "$dist\bin\"
+Copy-Item "$root\target\release\restream-cli.exe" "$dist\bin\"
+Copy-Item "$gst\bin\*.dll" "$dist\bin\"
+Copy-Item "$gst\bin\gst-inspect-1.0.exe" "$dist\bin\" -ErrorAction SilentlyContinue
 
 # Plugins we use. Missing ones (e.g. no nvcodec on a non-NVIDIA box) are skipped.
 $plugins = @(
@@ -32,7 +33,7 @@ $plugins = @(
 )
 foreach ($p in $plugins) {
   $f = "$gst\lib\gstreamer-1.0\gst$p.dll"
-  if (Test-Path $f) { Copy-Item $f "$dist\gst-plugins" } else { Write-Host "  (no plugin $p)" }
+  if (Test-Path $f) { Copy-Item $f "$dist\bin\gst-plugins" } else { Write-Host "  (no plugin $p)" }
 }
 # libav needs its own DLLs (already in bin), pango needs fontconfig/freetype (in bin).
 

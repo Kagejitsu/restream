@@ -16,4 +16,4 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export PKG_CONFIG_ALLOW_CROSS=1
 export PKG_CONFIG_PATH_x86_64_pc_windows_msvc="$GST/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR_x86_64_pc_windows_msvc="$GST/lib/pkgconfig"
-exec cargo xwin build --target x86_64-pc-windows-msvc -p restream-gui -p restream-cli "$@"
+exec cargo xwin build --target x86_64-pc-windows-msvc -p restream-gui -p restream-cli -p restream-launcher "$@"

@@ -12,10 +12,15 @@ REL=target/x86_64-pc-windows-msvc/release
 DIST=${1:-dist}
 [ -f "$REL/restream.exe" ] || { echo "build first: tools/xwin-build.sh --release"; exit 2; }
 
-rm -rf "$DIST"; mkdir -p "$DIST/gst-plugins"
-cp "$REL/restream.exe" "$REL/restream-cli.exe" "$DIST/"
-cp "$GST"/bin/*.dll "$DIST/"
-cp "$GST/bin/gst-inspect-1.0.exe" "$DIST/" 2>/dev/null || true
+rm -rf "$DIST"; mkdir -p "$DIST/bin/gst-plugins"
+# root: launchers + docs only
+cp "$REL/restream-launch-gui.exe" "$DIST/Restream.exe"
+cp "$REL/restream-launch-cli.exe" "$DIST/restream-cli.exe"
+# bin: the real executables beside the runtime DLLs they import
+cp "$REL/restream.exe" "$DIST/bin/restream.exe"
+cp "$REL/restream-cli.exe" "$DIST/bin/restream-cli.exe"
+cp "$GST"/bin/*.dll "$DIST/bin/"
+cp "$GST/bin/gst-inspect-1.0.exe" "$DIST/bin/" 2>/dev/null || true
 
 plugins=(coreelements app typefindfunctions playback
   videoconvertscale videorate videotestsrc audiotestsrc audioconvert audioresample level
@@ -26,15 +31,15 @@ plugins=(coreelements app typefindfunctions playback
   srt rtmp2 dtls sctp)
 for p in "${plugins[@]}"; do
   f="$GST/lib/gstreamer-1.0/gst$p.dll"
-  if [ -f "$f" ]; then cp "$f" "$DIST/gst-plugins/"; else echo "  (no plugin $p)"; fi
+  if [ -f "$f" ]; then cp "$f" "$DIST/bin/gst-plugins/"; else echo "  (no plugin $p)"; fi
 done
 cp docs/USER-GUIDE.md "$DIST/"
 cat > "$DIST/README.txt" <<'EOF'
 Restream - delayed multi-destination restreamer
 
-  restream.exe      the app (double-click)
+  Restream.exe      the app (double-click)
   restream-cli.exe  command-line runner, e.g.  restream-cli encoders
-  gst-plugins\      GStreamer plugins (found automatically)
+  bin\              the program and the GStreamer runtime (DLLs, gst-plugins\)
   USER-GUIDE.md     how to set it up
 
 First run: Windows SmartScreen may warn because the exe is not code-signed.

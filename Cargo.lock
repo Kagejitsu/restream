@@ -3425,6 +3425,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "restream-launcher"
+version = "0.1.0"
+
+[[package]]
 name = "restream-rtmp"
 version = "0.1.0"
 dependencies = [

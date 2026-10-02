@@ -1,0 +1,16 @@
+[package]
+name = "restream-launcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tiny launchers so the Windows bundle keeps its DLLs in bin\\ instead of the root."
+
+# GUI launcher: no console window.
+[[bin]]
+name = "restream-launch-gui"
+path = "src/gui.rs"
+
+# CLI launcher: keeps the console, forwards arguments and the exit code.
+[[bin]]
+name = "restream-launch-cli"
+path = "src/cli.rs"
