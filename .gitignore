@@ -2,3 +2,4 @@
 /tools/bin/
 *.log
 /tests/out/
+/dist/
