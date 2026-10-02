@@ -17,6 +17,7 @@ pub mod delay;
 pub mod devices;
 pub mod engine;
 pub mod fanout;
+pub mod monitor;
 pub mod packet;
 pub mod pipeline;
 pub mod preview;

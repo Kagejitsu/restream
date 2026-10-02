@@ -91,3 +91,28 @@ async fn mp4_remux_at_session_end() {
     assert!((2.5..4.5).contains(&d), "mp4 duration {d}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_preview_and_on_air_monitor_produce_frames() {
+    restream_core::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("restream-montest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let engine = Engine::new(test_profile(&dir, "mkv"));
+    engine.set_monitor(true).await;
+    engine.go_live().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let live = engine.preview().take_newer(0).expect("live preview frame");
+    assert_eq!((live.width, live.height), (960, 540));
+    let mon = engine.monitor_preview().take_newer(0).expect("on-air monitor frame");
+    assert_eq!((mon.width, mon.height), (640, 360));
+    assert_eq!(mon.rgba.len(), 640 * 360 * 4);
+    // Disable mid-session: no new frames after a moment.
+    engine.set_monitor(false).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let seq = engine.monitor_preview().latest_seq();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(engine.monitor_preview().latest_seq(), seq, "monitor kept producing after disable");
+    engine.stop_drain().await.unwrap();
+    engine.wait_idle().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

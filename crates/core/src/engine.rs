@@ -14,7 +14,7 @@
 //!   disconnect at once. The panic button.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +28,7 @@ use tracing::{info, warn};
 use crate::config::Profile;
 use crate::fanout::{self, DestSpec, Outbound, ReleaseCommand, ReleaserConfig};
 use crate::pipeline::Pipeline;
+use crate::monitor;
 use crate::preview::PreviewSlot;
 use crate::record::{self, RecordBranch};
 use crate::stats::{StatsBus, StatsEvent};
@@ -61,6 +62,9 @@ pub struct Engine {
     state_rx: watch::Receiver<EngineState>,
     stats: StatsBus,
     preview: Arc<PreviewSlot>,
+    /// Frames of the delayed (on-air) output, when the monitor is enabled.
+    monitor_preview: Arc<PreviewSlot>,
+    monitor_enabled: AtomicBool,
     session: tokio::sync::Mutex<Option<Session>>,
 }
 
@@ -73,6 +77,8 @@ impl Engine {
             state_rx,
             stats: StatsBus::new(),
             preview: PreviewSlot::new(),
+            monitor_preview: PreviewSlot::new(),
+            monitor_enabled: AtomicBool::new(false),
             session: tokio::sync::Mutex::new(None),
         })
     }
@@ -108,6 +114,30 @@ impl Engine {
 
     pub fn preview(&self) -> Arc<PreviewSlot> {
         Arc::clone(&self.preview)
+    }
+
+    pub fn monitor_preview(&self) -> Arc<PreviewSlot> {
+        Arc::clone(&self.monitor_preview)
+    }
+
+    pub fn monitor_enabled(&self) -> bool {
+        self.monitor_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Enable/disable the On-Air monitor (decoding the delayed output).
+    /// Takes effect immediately in a running session and persists for the next.
+    pub async fn set_monitor(&self, enabled: bool) {
+        self.monitor_enabled.store(enabled, Ordering::Relaxed);
+        if let Some(s) = self.session.lock().await.as_ref() {
+            if enabled {
+                let (tx, rx) = mpsc::channel::<Outbound>(512);
+                tokio::spawn(monitor::monitor_task(rx, Arc::clone(&self.monitor_preview)));
+                let _ = s.cmd_tx.send(ReleaseCommand::AttachTap(tx));
+            } else {
+                let _ = s.cmd_tx.send(ReleaseCommand::DetachTap);
+                self.monitor_preview.clear();
+            }
+        }
     }
 
     /// Start capture, encoding, recording and the delay buffer. Destinations
@@ -222,6 +252,11 @@ impl Engine {
             })
         };
 
+        if self.monitor_enabled() {
+            let (tx, rx) = mpsc::channel::<Outbound>(512);
+            tokio::spawn(monitor::monitor_task(rx, Arc::clone(&self.monitor_preview)));
+            let _ = cmd_tx.send(ReleaseCommand::AttachTap(tx));
+        }
         *guard = Some(Session { pipeline, releaser, dest_tasks, cmd_tx, stop_tx, monitor, recorder, rec_ticker });
         self.state.send_replace(EngineState::Filling);
         info!(target: "engine", "session started: delay {}s", profile.delay.seconds);
@@ -352,6 +387,7 @@ impl Engine {
             s.monitor.abort();
         }
         self.preview.clear();
+        self.monitor_preview.clear();
         self.stats.emit(StatsEvent::Recording { active: false, path: None, bytes: 0, duration: Duration::ZERO });
         self.state.send_replace(EngineState::Idle);
         info!(target: "engine", "session finished");

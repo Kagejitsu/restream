@@ -33,13 +33,17 @@ pub enum Inbound {
 }
 
 /// Operator commands to the releaser.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum ReleaseCommand {
     /// Discard the whole buffer now (panic button / hard stop).
     Cut,
     SetDelay(Duration),
     /// Treat the input as ended even though the pipeline never posted EOS.
     ForceEos,
+    /// Attach a passive consumer (the On-Air monitor). It gets the codec
+    /// config and every released packet; it is dropped when its queue fills.
+    AttachTap(mpsc::Sender<Outbound>),
+    DetachTap,
 }
 
 /// What destinations receive.
@@ -74,8 +78,9 @@ pub async fn releaser_task(
     stats: StatsBus,
 ) {
     let mut ring = DelayRing::new(cfg.delay, cfg.max_bytes);
-    let mut codec: CodecConfig;
+    let mut codec: Option<CodecConfig> = None;
     let mut codec_sent = false;
+    let mut tap: Option<mpsc::Sender<Outbound>> = None;
     let mut stats_tick = tokio::time::interval(Duration::from_millis(500));
     let mut first_release: Option<Instant> = None;
     let mut armed = false;
@@ -109,16 +114,22 @@ pub async fn releaser_task(
                     ring.mark_eos();
                     if ring.is_drained() { break; }
                 }
+                Some(ReleaseCommand::AttachTap(t)) => {
+                    if let Some(c) = &codec { let _ = t.try_send(Outbound::Codec(c.clone())); }
+                    tap = Some(t);
+                }
+                Some(ReleaseCommand::DetachTap) => { tap = None; }
                 None => {}
             },
 
             msg = inbound.recv() => match msg {
                 Some(Inbound::Codec(c)) => {
-                    codec = c;
-                    if !codec_sent && codec.is_complete(cfg.expect_audio) {
+                    if !codec_sent && c.is_complete(cfg.expect_audio) {
                         codec_sent = true;
-                        for d in &dests { let _ = d.send(Outbound::Codec(codec.clone())).await; }
+                        for d in &dests { let _ = d.send(Outbound::Codec(c.clone())).await; }
+                        if let Some(t) = &tap { let _ = t.try_send(Outbound::Codec(c.clone())); }
                     }
+                    codec = Some(c);
                 }
                 Some(Inbound::Packet(p, arrival)) => {
                     total_pkts += 1;
@@ -153,6 +164,7 @@ pub async fn releaser_task(
                         first_release = Some(now);
                         info!(target: "fanout", "first packet released; on air");
                     }
+                    if let Some(t) = &tap { let _ = t.try_send(Outbound::Packet(p.clone())); }
                     for (i, d) in dests.iter().enumerate() {
                         match d.try_send(Outbound::Packet(p.clone())) {
                             Ok(()) => {}
@@ -192,6 +204,7 @@ pub async fn releaser_task(
     for d in &dests {
         let _ = d.send(Outbound::Finish).await;
     }
+    if let Some(t) = &tap { let _ = t.try_send(Outbound::Finish); }
     info!(target: "fanout", "releaser finished (eos={}, remaining={})", ring.is_eos(), ring.len());
 }
 
