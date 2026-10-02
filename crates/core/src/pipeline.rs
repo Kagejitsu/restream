@@ -254,6 +254,10 @@ fn sources(profile: &Profile) -> Result<(String, Option<String>)> {
     let v = match &profile.input.video {
         VideoSource::Test { pattern } => format!("videotestsrc is-live=true pattern={pattern} name=vsrc"),
         VideoSource::V4l2 { device, format } => format!("v4l2src device={device} name=vsrc{}", caps_fragment(format)),
+        VideoSource::PipeWire { target, format } => {
+            let t = if target.is_empty() { String::new() } else { format!(" target-object=\"{}\"", escape(target)) };
+            format!("pipewiresrc{t} name=vsrc{}", caps_fragment(format))
+        }
         VideoSource::MediaFoundation { device, format } => {
             format!("mfvideosrc device-path=\"{}\" name=vsrc{}", escape(device), caps_fragment(format))
         }

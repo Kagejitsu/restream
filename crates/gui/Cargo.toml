@@ -21,4 +21,6 @@ parking_lot.workspace = true
 eframe.workspace = true
 egui.workspace = true
 keyring.workspace = true
+dirs = "7"
+restream-rtmp = { path = "../rtmp" }
 restream-core = { path = "../core" }

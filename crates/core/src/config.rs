@@ -112,6 +112,8 @@ pub enum VideoSource {
     Test { pattern: String },
     /// Linux V4L2 (`/dev/video0`).
     V4l2 { device: String, #[serde(default)] format: CaptureFormat },
+    /// Linux PipeWire camera/screen node (`target` = node name/serial, "" = default).
+    PipeWire { target: String, #[serde(default)] format: CaptureFormat },
     /// Windows Media Foundation (UVC webcams, Blackmagic Web Presenter).
     /// `device` is the MF symbolic link / device path.
     MediaFoundation { device: String, #[serde(default)] format: CaptureFormat },
