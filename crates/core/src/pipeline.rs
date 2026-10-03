@@ -41,8 +41,10 @@ pub const PREVIEW_WIDTH: u32 = 960;
 pub const PREVIEW_HEIGHT: u32 = 540;
 
 const VIDEO_ENCODER_PREFERENCE: &[&str] = &[
-    "nvh264enc",
+    // NVIDIA: the Direct3D 11 variant needs no CUDA runtime; the CUDA ones fail
+    // with NV_ENC_ERR_INVALID_VERSION / CUDA_ERROR_NO_DEVICE on some driver setups.
     "nvd3d11h264enc",
+    "nvh264enc",
     "nvcudah264enc",
     "amfh264enc",
     "qsvh264enc",
