@@ -40,9 +40,10 @@ connect about three seconds before the first frame goes out.
 **Audio offset** (Input tab) shifts audio relative to video in milliseconds and
 can be changed live. Positive = audio later.
 
-**Burn running-time clock** overlays a timecode on the picture: use it in a
-rehearsal to check that all platforms show the same time and that the delay is
-what you expect.
+**TEST ONLY: burn a timecode clock** overlays a running clock on the picture,
+visible to every viewer and in recordings. Use it in a rehearsal to check that
+all platforms show the same time and that the delay is what you expect, then
+turn it off. While it is on, the running-specs line says "CLOCK BURN-IN ON".
 
 ## Encoder
 

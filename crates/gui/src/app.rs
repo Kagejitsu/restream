@@ -442,7 +442,10 @@ impl App {
                     if destinations.len() == 1 { "" } else { "s" },
                     if recording { "  ·  recording" } else { "" }
                 ));
-                l.specs_fallback = fallback;
+                if self.profile.input.burn_in_clock {
+                    l.specs = l.specs.as_ref().map(|s| format!("{s}  ·  CLOCK BURN-IN ON (Input tab)"));
+                }
+                l.specs_fallback = fallback || self.profile.input.burn_in_clock;
                 if fallback {
                     self.toast = Some((Instant::now(), format!("Configured encoder failed; running on {video_encoder_desc}. It will be tried first from now on."), false));
                 }
@@ -770,7 +773,11 @@ impl App {
             ui.add(egui::DragValue::new(&mut self.profile.input.audio_offset_ms).range(-2000..=2000).speed(5));
             ui.label(RichText::new("positive = audio later").weak());
         });
-        ui.checkbox(&mut self.profile.input.burn_in_clock, "Burn running-time clock into picture (rehearsal / sync checks)");
+        ui.checkbox(&mut self.profile.input.burn_in_clock, "TEST ONLY: burn a timecode clock into the picture (viewers and recordings will see it)")
+            .on_hover_text("For rehearsals: proves every platform shows the same frame and that the delay holds. Turn it off for real shows.");
+        if self.profile.input.burn_in_clock {
+            ui.label(RichText::new("Clock burn-in is ON: it will be visible on every stream and in recordings.").color(Color32::from_rgb(230, 160, 30)));
+        }
     }
 
     fn tab_encoder(&mut self, ui: &mut egui::Ui) {
