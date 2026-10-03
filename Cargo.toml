@@ -6,7 +6,7 @@ members = ["crates/core", "crates/rtmp", "crates/cli", "crates/gui", "crates/lau
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = ""
+repository = "https://github.com/Kagejitsu/restream"
 authors = ["Kate"]
 
 [workspace.dependencies]

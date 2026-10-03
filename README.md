@@ -15,6 +15,11 @@ capture ─ encode once ─┬─ record (undelayed, crash-safe MKV / MP4)
   reconnect and keyframe resync; a slow destination never affects the others.
 - **GUI**: egui. **Core**: Rust + GStreamer. **RTMP**: own client over `rml_rtmp` (+ rustls for RTMPS).
 
+## Download
+
+Windows builds are on the [releases page](https://github.com/Kagejitsu/restream/releases):
+extract `Restream-<version>-win64.7z` anywhere and run `Restream.exe` (unsigned: SmartScreen → "More info" → "Run anyway").
+
 ## Layout
 
 | crate | role |

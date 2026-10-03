@@ -19,7 +19,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { last_profile: String::new(), debug_logging: true, preferred_video_encoder: String::new() }
+        Self { last_profile: String::new(), debug_logging: false, preferred_video_encoder: String::new() }
     }
 }
 
