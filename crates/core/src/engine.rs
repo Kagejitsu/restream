@@ -324,6 +324,12 @@ impl Engine {
         info!(target: "engine", "stop (CUT): discarding buffer");
         let _ = session.cmd_tx.send(ReleaseCommand::Cut);
         let _ = session.stop_tx.send(true);
+        // A cut during a drain only empties the buffer; the drain's own
+        // finisher is already waiting for the releaser.
+        if self.state() == EngineState::Draining {
+            return Ok(());
+        }
+        self.state.send_replace(EngineState::Draining);
         send_eos_guarded(session.pipeline.gst().clone(), session.cmd_tx.clone()).await;
         let me = Arc::clone(self);
         tokio::spawn(async move { me.finish_when_drained().await });
@@ -334,6 +340,15 @@ impl Engine {
     pub async fn set_delay(&self, d: Duration) {
         if let Some(s) = self.session.lock().await.as_ref() {
             let _ = s.cmd_tx.send(ReleaseCommand::SetDelay(d));
+        }
+    }
+
+    /// Change the video bitrate live (hardware and x264 encoders accept this
+    /// while running). Also stored in the profile for the next session.
+    pub async fn set_video_bitrate_kbps(&self, kbps: u32) {
+        self.profile.lock().encoder.bitrate_kbps = kbps;
+        if let Some(s) = self.session.lock().await.as_ref() {
+            s.pipeline.set_video_bitrate_kbps(kbps);
         }
     }
 

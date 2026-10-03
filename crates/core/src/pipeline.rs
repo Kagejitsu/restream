@@ -189,6 +189,17 @@ impl Pipeline {
         self.pipeline.send_event(gst::event::Eos::new());
     }
 
+    /// Live bitrate change on the running video encoder.
+    pub fn set_video_bitrate_kbps(&self, kbps: u32) {
+        if let Some(enc) = self.pipeline.by_name("venc") {
+            let v = if self.video_encoder == "openh264enc" { kbps * 1000 } else { kbps };
+            if try_set(&enc, "bitrate", &v.to_string()) {
+                try_set(&enc, "max-bitrate", &v.to_string());
+                info!(target: "pipeline", "video bitrate → {kbps} kbps");
+            }
+        }
+    }
+
     /// Live-tunable audio offset.
     pub fn set_audio_offset_ms(&self, ms: i64) {
         if let Some(p) = &self.audio_tee_pad {

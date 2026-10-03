@@ -391,6 +391,18 @@ impl App {
                 }
             }
             ui.separator();
+            if state != EngineState::Idle {
+                ui.separator();
+                ui.label("Bitrate");
+                let mut kbps = self.profile.encoder.bitrate_kbps;
+                let r = ui.add(egui::DragValue::new(&mut kbps).range(500..=60000).speed(50).suffix(" kbps"))
+                    .on_hover_text("Applies to the running encoder immediately (all destinations get the same stream).");
+                if r.changed() && kbps != self.profile.encoder.bitrate_kbps {
+                    self.profile.encoder.bitrate_kbps = kbps;
+                    let engine = Arc::clone(&self.engine);
+                    self.rt.spawn(async move { engine.set_video_bitrate_kbps(kbps).await });
+                }
+            }
             let rec_label = if self.live.rec_active { "[REC]" } else { "REC" };
             let rec_enabled = state != EngineState::Idle && state != EngineState::Draining;
             if ui.add_enabled(rec_enabled, egui::Button::new(RichText::new(rec_label).color(if self.live.rec_active { Color32::RED } else { Color32::GRAY }))).on_hover_text("Start/stop local recording (undelayed)").clicked() {
@@ -544,11 +556,11 @@ impl App {
             | VideoSource::MediaFoundation { device, format }
             | VideoSource::DirectShow { device, format }
             | VideoSource::KernelStreaming { device, format } => {
-                device_picker(ui, "Video/Source", &self.devices, device, self.devices_loading);
+                device_picker(ui, "Video", &self.devices, device, self.devices_loading);
                 format_editor(ui, format);
             }
             VideoSource::PipeWire { target, format } => {
-                device_picker(ui, "Video/Source", &self.devices, target, self.devices_loading);
+                device_picker(ui, "Video", &self.devices, target, self.devices_loading);
                 format_editor(ui, format);
             }
             VideoSource::DeckLink { device_number, mode, connection } => {
@@ -592,9 +604,15 @@ impl App {
             self.profile.input.audio = default_audio(new_akind);
         }
         match &mut self.profile.input.audio {
-            AudioSource::Pulse { device } => device_picker(ui, "Audio/Source", &self.devices, device, self.devices_loading),
+            AudioSource::Pulse { device } => {
+                device_picker(ui, "Audio", &self.devices, device, self.devices_loading);
+            }
             AudioSource::Wasapi { device, loopback } => {
-                device_picker(ui, "Audio/Source", &self.devices, device, self.devices_loading);
+                // Render endpoints (speakers, a virtual cable's output side) can
+                // only be captured in loopback mode: follow the device's own flag.
+                if let Some(d) = device_picker(ui, "Audio", &self.devices, device, self.devices_loading) {
+                    *loopback = is_loopback_endpoint(d);
+                }
                 ui.checkbox(loopback, "Loopback (capture what this device plays)");
             }
             AudioSource::DeckLink { device_number } => {
@@ -983,8 +1001,20 @@ fn audio_meter(ui: &mut egui::Ui, rms: &[f64], peak: &[f64]) {
     }
 }
 
-fn device_picker(ui: &mut egui::Ui, class: &str, devices: &[DeviceInfo], value: &mut String, loading: bool) {
-    let list: Vec<&DeviceInfo> = devices.iter().filter(|d| d.class.starts_with(class)).collect();
+/// Devices whose class names both words, in any order ("Video/Source",
+/// "Source/Video" as Media Foundation reports it, "Audio/Source", ...).
+fn devices_of<'a>(devices: &'a [DeviceInfo], kind: &str) -> Vec<&'a DeviceInfo> {
+    devices.iter().filter(|d| d.class.contains(kind) && d.class.contains("Source")).collect()
+}
+
+fn is_loopback_endpoint(d: &DeviceInfo) -> bool {
+    d.properties.iter().any(|(k, v)| k == "wasapi2.device.loopback" && v == "true")
+}
+
+/// Returns the chosen device (if the selection changed this frame).
+fn device_picker<'a>(ui: &mut egui::Ui, class: &str, devices: &'a [DeviceInfo], value: &mut String, loading: bool) -> Option<&'a DeviceInfo> {
+    let list = devices_of(devices, class);
+    let mut chosen = None;
     ui.horizontal(|ui| {
         ui.label("Device");
         let selected = list.iter().find(|d| device_id(d).as_deref() == Some(value.as_str())).map(|d| d.display_name.clone()).unwrap_or_else(|| if value.is_empty() { "(default)".into() } else { value.clone() });
@@ -997,12 +1027,16 @@ fn device_picker(ui: &mut egui::Ui, class: &str, devices: &[DeviceInfo], value: 
             }
             for d in &list {
                 if let Some(id) = device_id(d) {
-                    let label = match &d.element {
+                    let mut label = match &d.element {
                         Some(e) => format!("{}  [{e}]", d.display_name),
                         None => d.display_name.clone(),
                     };
+                    if is_loopback_endpoint(d) {
+                        label.push_str("  (loopback: what it plays)");
+                    }
                     if ui.selectable_label(*value == id, label).on_hover_text(d.formats.join("\n")).clicked() {
                         *value = id;
+                        chosen = Some(*d);
                     }
                 }
             }
@@ -1012,6 +1046,7 @@ fn device_picker(ui: &mut egui::Ui, class: &str, devices: &[DeviceInfo], value: 
         ui.label(RichText::new("or id/path").weak());
         ui.text_edit_singleline(value);
     });
+    chosen
 }
 
 /// Best-effort device identifier for the source element's selection property.

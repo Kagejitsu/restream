@@ -116,3 +116,54 @@ async fn live_preview_and_on_air_monitor_produce_frames() {
     engine.wait_idle().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cut_ends_session_promptly_even_with_long_delay() {
+    restream_core::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("restream-cuttest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = test_profile(&dir, "mkv");
+    p.delay.seconds = 120; // nothing would be released for two minutes
+    let engine = Engine::new(p);
+    engine.go_live().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let t = std::time::Instant::now();
+    engine.stop_cut().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), engine.wait_idle()).await.expect("cut must end the session without waiting for the delay");
+    assert!(t.elapsed() < Duration::from_secs(8), "cut took {:?}", t.elapsed());
+    assert_eq!(engine.state(), EngineState::Idle);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_bitrate_change_reaches_the_encoder() {
+    restream_core::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("restream-brtest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = test_profile(&dir, "mkv");
+    p.input.video = VideoSource::Test { pattern: "snow".into() }; // noisy: bitrate-limited
+    p.encoder.bitrate_kbps = 600;
+    let engine = Engine::new(p);
+    let mut stats = engine.stats();
+    engine.go_live().await.unwrap();
+    async fn measure(stats: &mut tokio::sync::broadcast::Receiver<restream_core::StatsEvent>) -> f64 {
+        // average the next 3 encoder reports
+        let mut v = Vec::new();
+        while v.len() < 3 {
+            if let Ok(restream_core::StatsEvent::Encoder { video_kbps, .. }) = stats.recv().await {
+                v.push(video_kbps);
+            }
+        }
+        v.iter().sum::<f64>() / v.len() as f64
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let low = measure(&mut stats).await;
+    engine.set_video_bitrate_kbps(4000).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let high = measure(&mut stats).await;
+    eprintln!("video kbps before {low:.0} after {high:.0}");
+    assert!(high > low * 2.0, "bitrate change not reflected: {low:.0} → {high:.0}");
+    engine.stop_cut().await.unwrap();
+    engine.wait_idle().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

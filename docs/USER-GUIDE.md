@@ -33,7 +33,7 @@ connect about three seconds before the first frame goes out.
 | --- | --- |
 | Blackmagic Web Presenter (USB-C) | Appears as a webcam: choose **Media Foundation** and pick it. Set the capture format to what the Web Presenter outputs (e.g. 1920×1080 @ 60). Its audio comes in as a USB audio device: choose **WASAPI** and pick it. |
 | DeckLink | **DeckLink** video (mode `auto` or e.g. `1080p5994`, connection SDI/HDMI) and **DeckLink** audio with the same device number. |
-| OBS Virtual Camera | **DirectShow**, device name `OBS Virtual Camera`. **It carries no audio.** For audio pick a WASAPI device: a virtual cable (VB-Cable) that OBS monitors to, or tick *Loopback* on the output device OBS plays to. |
+| OBS Virtual Camera | **DirectShow**, device name `OBS Virtual Camera`. **It carries no audio.** For audio pick a WASAPI device: a virtual cable (VB-Cable) that OBS monitors to, or the output device OBS plays to. Output devices (speakers, headphones, a cable's playback side) are listed with *(loopback: what it plays)* and are captured in loopback mode automatically; a capture device (microphone, line-in, the Web Presenter's USB audio) is used directly. |
 | Webcams / other capture cards | **Media Foundation** (preferred) or **Kernel Streaming**. |
 | OBS over the network (recommended for OBS) | **Network**: `srt://:9000?mode=listener`. In OBS: Settings → Stream → Service *Custom*, Server `srt://<this PC's IP>:9000?mode=caller`, key empty. One link carries video **and** audio in sync. Set audio to **From video source**. |
 
@@ -50,7 +50,9 @@ what you expect.
   QSV, Media Foundation) and falls back to x264 on the CPU.
 - Keyframe interval 2 s is what Twitch/YouTube/Facebook want. Keep it.
 - Bitrate: every destination gets the same stream, so stay within the strictest
-  platform (Twitch: 6000 kbps, 8000 for partners).
+  platform (Twitch: 6000 kbps, 8000 for partners). While on air the **Bitrate**
+  box in the top bar changes the running encoder immediately; the Encoder tab
+  value is the starting point for the next session.
 - Preset: x264 `veryfast`…`slow`; NVENC `p4`…`p7`; AMF `quality`; QSV/VA `1`–`7`.
 
 ## Delay

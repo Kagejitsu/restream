@@ -84,6 +84,9 @@ pub async fn releaser_task(
     let mut stats_tick = tokio::time::interval(Duration::from_millis(500));
     let mut first_release: Option<Instant> = None;
     let mut armed = false;
+    // After a Cut nothing more may go out, including the encoder flush that
+    // follows the EOS we send right after it.
+    let mut cut = false;
     // Encoder-rate counters (reset every second).
     let mut enc_since = Instant::now();
     let (mut v_pkts, mut v_bytes, mut a_bytes, mut total_pkts) = (0u64, 0u64, 0u64, 0u64);
@@ -103,6 +106,7 @@ pub async fn releaser_task(
 
             cmd = commands.recv() => match cmd {
                 Some(ReleaseCommand::Cut) => {
+                    cut = true;
                     let n = ring.cut();
                     info!(target: "fanout", "cut: discarded {n} buffered packets");
                     // Discarded data means destinations must restart on a keyframe.
@@ -131,6 +135,7 @@ pub async fn releaser_task(
                     }
                     codec = Some(c);
                 }
+                Some(Inbound::Packet(_, _)) if cut => {}
                 Some(Inbound::Packet(p, arrival)) => {
                     total_pkts += 1;
                     match p.kind {
