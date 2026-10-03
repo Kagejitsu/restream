@@ -373,9 +373,10 @@ impl Engine {
         };
         let Some(branch) = branch else { bail!("not recording") };
         let container = self.profile.lock().recording.container.clone();
+        let has_audio = branch.has_audio();
         tokio::task::spawn_blocking(move || {
             let files = branch.stop()?;
-            finish_files(files, &container)
+            finish_files(files, &container, has_audio)
         })
         .await?
     }
@@ -468,18 +469,30 @@ impl Engine {
             // pipeline EOS has already finalised any recording; just collect it.
             let container = self.profile.lock().recording.container.clone();
             let recorder = Arc::clone(&s.recorder);
-            let _ = tokio::task::spawn_blocking(move || {
+            let pending = tokio::task::spawn_blocking(move || {
                 s.pipeline.stop();
-                if let Some(b) = recorder.lock().take() {
-                    let files = b.files();
-                    match finish_files(files, &container) {
-                        Ok(f) => info!(target: "engine", "recording saved: {:?}", f),
-                        Err(e) => warn!(target: "engine", "recording post-processing failed: {e:#}"),
-                    }
-                }
+                recorder.lock().take().map(|b| (b.files(), b.has_audio()))
             })
-            .await;
+            .await
+            .ok()
+            .flatten();
             s.monitor.abort();
+            // Post-processing (MP4 remux) runs AFTER the session is Idle so the
+            // operator is never locked out waiting for it.
+            if let Some((files, has_audio)) = pending {
+                let stats = self.stats.clone();
+                tokio::task::spawn_blocking(move || match finish_files(files, &container, has_audio) {
+                    Ok(f) => {
+                        let names: Vec<String> = f.iter().map(|p| p.display().to_string()).collect();
+                        info!(target: "engine", "recording saved: {names:?}");
+                        stats.emit(StatsEvent::Notice(format!("Recording saved: {}", names.join(", "))));
+                    }
+                    Err(e) => {
+                        warn!(target: "engine", "recording post-processing failed: {e:#}");
+                        stats.emit(StatsEvent::Warning(format!("recording post-processing failed: {e:#}")));
+                    }
+                });
+            }
         }
         self.preview.clear();
         self.monitor_preview.clear();
@@ -520,13 +533,13 @@ async fn send_eos_guarded(pipeline: gstreamer::Pipeline, cmd_tx: mpsc::Unbounded
 }
 
 /// Post-process finished recording files (MP4 remux when requested).
-fn finish_files(files: Vec<PathBuf>, container: &str) -> Result<Vec<PathBuf>> {
+fn finish_files(files: Vec<PathBuf>, container: &str, has_audio: bool) -> Result<Vec<PathBuf>> {
     if container != "mp4" {
         return Ok(files);
     }
     let mut out = Vec::new();
     for f in files {
-        match record::remux_to_mp4(&f) {
+        match record::remux_to_mp4(&f, has_audio) {
             Ok(m) => out.push(m),
             Err(e) => {
                 warn!(target: "engine", "keeping MKV; {e:#}");

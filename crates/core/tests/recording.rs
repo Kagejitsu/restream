@@ -79,10 +79,20 @@ async fn mp4_remux_at_session_end() {
     let dir = std::env::temp_dir().join(format!("restream-rectest-mp4-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let engine = Engine::new(test_profile(&dir, "mp4"));
+    let mut stats = engine.stats();
     engine.go_live().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
     engine.stop_drain().await.unwrap();
     engine.wait_idle().await;
+    // the remux runs after Idle; wait for its notice
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        match tokio::time::timeout_at(deadline, stats.recv()).await {
+            Ok(Ok(restream_core::StatsEvent::Notice(n))) if n.contains(".mp4") => break,
+            Ok(Ok(_)) => {}
+            _ => panic!("remux notice not received"),
+        }
+    }
 
     let files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok().map(|e| e.path())).collect();
     assert_eq!(files.len(), 1, "expected only the mp4, got {files:?}");
@@ -216,5 +226,38 @@ async fn encoder_fallback_when_configured_encoder_cannot_start() {
     assert!(warned, "a warning naming the substitute encoder must be emitted");
     engine.stop_cut().await.unwrap();
     engine.wait_idle().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mp4_remux_without_audio_does_not_block_idle() {
+    restream_core::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("restream-mp4na-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = test_profile(&dir, "mp4");
+    p.input.audio = AudioSource::None;
+    let engine = Engine::new(p);
+    let mut stats = engine.stats();
+    engine.go_live().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let t = std::time::Instant::now();
+    engine.stop_drain().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), engine.wait_idle()).await.expect("must return to Idle without waiting for the remux");
+    assert!(t.elapsed() < Duration::from_secs(8));
+    // the remux finishes in the background and announces itself
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut saved = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout_at(deadline, stats.recv()).await {
+            Ok(Ok(restream_core::StatsEvent::Notice(n))) if n.contains(".mp4") => { saved = true; break; }
+            Ok(Ok(_)) => {}
+            _ => break,
+        }
+    }
+    assert!(saved, "expected a Notice naming the mp4");
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok().map(|e| e.path())).collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].extension().unwrap(), "mp4");
+    assert!((2.5..4.5).contains(&probe_duration(&files[0])));
     let _ = std::fs::remove_dir_all(&dir);
 }

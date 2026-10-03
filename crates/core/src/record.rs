@@ -31,6 +31,7 @@ pub struct RecordBranch {
     path: PathBuf,
     split: bool,
     started: Instant,
+    has_audio: bool,
 }
 
 impl RecordBranch {
@@ -130,11 +131,15 @@ impl RecordBranch {
         }
 
         info!(target: "record", "recording to {}{}", path.display(), if split { " (split)" } else { "" });
-        Ok(Self { pipeline: pipeline.clone(), elements, links, final_sink, path: path.to_path_buf(), split, started: Instant::now() })
+        Ok(Self { pipeline: pipeline.clone(), elements, links, final_sink, path: path.to_path_buf(), split, started: Instant::now(), has_audio: eat.is_some() })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn has_audio(&self) -> bool {
+        self.has_audio
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -233,12 +238,14 @@ fn files_for(path: &Path, split: bool) -> Vec<PathBuf> {
 
 /// Remux a finished MKV into an MP4 (no re-encode, `moov` at the front).
 /// Blocking. The MKV is deleted on success.
-pub fn remux_to_mp4(mkv: &Path) -> Result<PathBuf> {
+/// `has_audio` must match the file: a muxer given an audio pad that never
+/// receives data waits for it forever.
+pub fn remux_to_mp4(mkv: &Path, has_audio: bool) -> Result<PathBuf> {
     let mp4 = mkv.with_extension("mp4");
+    let audio = if has_audio { " d. ! queue ! aacparse ! mux." } else { "" };
     let desc = format!(
         "filesrc location=\"{}\" ! matroskademux name=d \
-         d. ! queue ! h264parse ! video/x-h264,stream-format=avc,alignment=au ! mux. \
-         d. ! queue ! aacparse ! mux. \
+         d. ! queue ! h264parse ! video/x-h264,stream-format=avc,alignment=au ! mux.{audio} \
          qtmux name=mux faststart=true ! filesink location=\"{}\"",
         esc(mkv),
         esc(&mp4)
@@ -246,7 +253,8 @@ pub fn remux_to_mp4(mkv: &Path) -> Result<PathBuf> {
     let p = gst::parse::launch(&desc).context("remux pipeline")?;
     let bus = p.bus().unwrap();
     p.set_state(gst::State::Playing).context("remux start")?;
-    let msg = bus.timed_pop_filtered(gst::ClockTime::from_seconds(3600), &[gst::MessageType::Eos, gst::MessageType::Error]);
+    // A remux is a copy: even hours of footage take well under this.
+    let msg = bus.timed_pop_filtered(gst::ClockTime::from_seconds(900), &[gst::MessageType::Eos, gst::MessageType::Error]);
     let _ = p.set_state(gst::State::Null);
     match msg.map(|m| m.type_()) {
         Some(gst::MessageType::Eos) => {

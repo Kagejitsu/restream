@@ -71,6 +71,8 @@ pub enum StatsEvent {
     /// Pipeline-level error (encoder/device failure). Session is stopping.
     Error(String),
     Warning(String),
+    /// Something finished in the background (e.g. "recording saved as …").
+    Notice(String),
 }
 
 #[derive(Clone)]

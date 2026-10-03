@@ -420,6 +420,7 @@ impl App {
                 l.rec_bytes = bytes;
                 l.rec_duration = duration;
             }
+            StatsEvent::Notice(n) => self.toast = Some((Instant::now(), n, false)),
             StatsEvent::Error(e) => l.last_error = Some((Instant::now(), e)),
             StatsEvent::Warning(w) => {
                 l.warnings.push((Instant::now(), w));

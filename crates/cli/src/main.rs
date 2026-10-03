@@ -157,6 +157,7 @@ async fn run(args: &[String]) -> Result<()> {
                         Ok(StatsEvent::AudioLevel { .. }) => {}
                         Ok(StatsEvent::Error(e)) => eprintln!("ERROR: {e}"),
                         Ok(StatsEvent::Warning(w)) => if !quiet { eprintln!("warning: {w}") },
+                        Ok(StatsEvent::Notice(n)) => eprintln!("{n}"),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(_) => break,
                     },
