@@ -13,11 +13,13 @@ pub struct Settings {
     /// effect at the next launch. On by default while the Windows device
     /// layer is being validated.
     pub debug_logging: bool,
+    /// Encoder that last worked when the profile said "auto"; tried first.
+    pub preferred_video_encoder: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { last_profile: String::new(), debug_logging: true }
+        Self { last_profile: String::new(), debug_logging: true, preferred_video_encoder: String::new() }
     }
 }
 

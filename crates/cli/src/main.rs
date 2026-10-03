@@ -158,6 +158,9 @@ async fn run(args: &[String]) -> Result<()> {
                         Ok(StatsEvent::Error(e)) => eprintln!("ERROR: {e}"),
                         Ok(StatsEvent::Warning(w)) => if !quiet { eprintln!("warning: {w}") },
                         Ok(StatsEvent::Notice(n)) => eprintln!("{n}"),
+                        Ok(StatsEvent::Session { video_encoder, video_encoder_desc, audio_encoder, width, height, fps, bitrate_kbps, audio_kbps, delay_s, fallback, .. }) => {
+                            eprintln!("session: {width}x{height}@{fps} {bitrate_kbps} kbps via {video_encoder} ({video_encoder_desc}){}; audio {:?} {audio_kbps} kbps; delay {delay_s}s", if fallback { " [FALLBACK]" } else { "" }, audio_encoder);
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(_) => break,
                     },

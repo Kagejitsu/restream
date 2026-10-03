@@ -73,6 +73,22 @@ pub enum StatsEvent {
     Warning(String),
     /// Something finished in the background (e.g. "recording saved as …").
     Notice(String),
+    /// What the running session actually uses (emitted once at start).
+    Session {
+        video_encoder: String,
+        video_encoder_desc: String,
+        audio_encoder: Option<String>,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+        audio_kbps: u32,
+        delay_s: u32,
+        destinations: Vec<String>,
+        recording: bool,
+        /// True when the configured encoder failed and this one was substituted.
+        fallback: bool,
+    },
 }
 
 #[derive(Clone)]

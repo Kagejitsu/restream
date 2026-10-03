@@ -46,6 +46,13 @@ what you expect.
 
 ## Encoder
 
+While a session runs, the line under the top bar ("RUNNING WITH: …") shows
+exactly what is on air: resolution, frame rate, bitrate, the encoder in use
+(friendly name and element), audio codec, delay, destinations and whether
+recording is on. It turns orange when the configured encoder failed and
+another one was substituted; *auto* then remembers the working encoder and
+tries it first next time ("forget" in the Encoder tab resets that).
+
 - *auto* picks the best hardware encoder present (NVIDIA NVENC, AMD AMF, Intel
   QSV, Media Foundation) and falls back to x264 on the CPU.
 - Keyframe interval 2 s is what Twitch/YouTube/Facebook want. Keep it.

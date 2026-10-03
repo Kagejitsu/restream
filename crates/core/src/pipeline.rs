@@ -108,6 +108,14 @@ pub fn available_video_encoders() -> Vec<String> {
     order.into_iter().filter(|n| element_usable(n)).collect()
 }
 
+/// Human-readable description of an encoder element ("Media Foundation
+/// NVIDIA H.264 Encoder MFT", "x264 H.264 encoder", ...).
+pub fn encoder_description(name: &str) -> String {
+    gst::ElementFactory::find(name)
+        .and_then(|f| f.metadata("long-name").map(|s| s.to_string()))
+        .unwrap_or_else(|| name.to_string())
+}
+
 /// (element name, long description) of every Media Foundation H.264 encoder
 /// element the registry offers (`mfh264enc`, `mfh264device1enc`, ...).
 fn media_foundation_h264_encoders() -> Vec<(String, String)> {

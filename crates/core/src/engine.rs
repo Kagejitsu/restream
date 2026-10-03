@@ -56,6 +56,9 @@ struct Session {
 
 pub struct Engine {
     profile: Mutex<Profile>,
+    /// Encoder to try first when the profile says "auto" (e.g. the one that
+    /// worked last time, so a known-bad hardware path is not retried).
+    preferred_video_encoder: Mutex<Option<String>>,
     state: watch::Sender<EngineState>,
     /// Kept so the channel is never "closed" (a watch send fails and drops
     /// the value when no receiver exists).
@@ -75,6 +78,7 @@ impl Engine {
         let (state, state_rx) = watch::channel(EngineState::Idle);
         Arc::new(Self {
             profile: Mutex::new(profile),
+            preferred_video_encoder: Mutex::new(None),
             state,
             state_rx,
             stats: StatsBus::new(),
@@ -84,6 +88,11 @@ impl Engine {
             session: tokio::sync::Mutex::new(None),
             input_preview: Mutex::new(None),
         })
+    }
+
+    /// Encoder tried first when the profile's encoder is "auto".
+    pub fn set_preferred_video_encoder(&self, name: Option<String>) {
+        *self.preferred_video_encoder.lock() = name.filter(|n| !n.is_empty() && n != "auto");
     }
 
     pub fn profile(&self) -> Profile {
@@ -214,6 +223,8 @@ impl Engine {
         let mut candidates: Vec<String> = Vec::new();
         if configured != "auto" && !configured.is_empty() {
             candidates.push(configured.clone());
+        } else if let Some(pref) = self.preferred_video_encoder.lock().clone() {
+            candidates.push(pref);
         }
         for c in crate::pipeline::available_video_encoders() {
             if !candidates.contains(&c) {
@@ -252,6 +263,25 @@ impl Engine {
         }
         let Some((pipeline, outputs)) = built else {
             return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no usable video encoder")));
+        };
+        let encoder_fallback = pipeline.video_encoder != candidates[0];
+        if encoder_fallback {
+            // Next time (this run) go straight to what worked.
+            *self.preferred_video_encoder.lock() = Some(pipeline.video_encoder.clone());
+        }
+        let session_specs = StatsEvent::Session {
+            video_encoder: pipeline.video_encoder.clone(),
+            video_encoder_desc: crate::pipeline::encoder_description(&pipeline.video_encoder),
+            audio_encoder: pipeline.audio_encoder.clone(),
+            width: profile.encoder.width,
+            height: profile.encoder.height,
+            fps: profile.encoder.fps,
+            bitrate_kbps: profile.encoder.bitrate_kbps,
+            audio_kbps: profile.encoder.audio_bitrate_kbps,
+            delay_s: profile.delay.seconds,
+            destinations: profile.destinations.iter().filter(|d| d.enabled).map(|d| d.name.clone()).collect(),
+            recording: profile.recording.enabled,
+            fallback: encoder_fallback,
         };
 
         // ---- fan-out ----
@@ -340,6 +370,7 @@ impl Engine {
         *guard = Some(Session { pipeline, releaser, dest_tasks, cmd_tx, stop_tx, monitor, recorder, rec_ticker });
         self.state.send_replace(EngineState::Filling);
         info!(target: "engine", "session started: delay {}s", profile.delay.seconds);
+        self.stats.emit(session_specs);
         Ok(())
     }
 

@@ -65,6 +65,9 @@ struct Live {
     rec_duration: Duration,
     last_error: Option<(Instant, String)>,
     warnings: Vec<(Instant, String)>,
+    /// One-line summary of what the running session uses.
+    specs: Option<String>,
+    specs_fallback: bool,
 }
 
 enum UiEvent {
@@ -116,6 +119,12 @@ impl App {
         let mut profile = load_last_profile();
         keys::hydrate(&mut profile);
         let engine = Engine::new(profile.clone());
+        {
+            let pref = Settings::load().preferred_video_encoder;
+            if !pref.is_empty() {
+                engine.set_preferred_video_encoder(Some(pref));
+            }
+        }
         let stats_rx = engine.stats();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel();
         let video_encoders = restream_core::pipeline::available_video_encoders();
@@ -421,6 +430,29 @@ impl App {
                 l.rec_duration = duration;
             }
             StatsEvent::Notice(n) => self.toast = Some((Instant::now(), n, false)),
+            StatsEvent::Session { video_encoder, video_encoder_desc, audio_encoder, width, height, fps, bitrate_kbps, audio_kbps, delay_s, destinations, recording, fallback } => {
+                let audio = match audio_encoder {
+                    Some(a) => format!("AAC {audio_kbps} kbps ({a})"),
+                    None => "no audio".to_string(),
+                };
+                let delay = fmt_dur(Duration::from_secs(delay_s as u64));
+                l.specs = Some(format!(
+                    "{width}x{height} @ {fps} fps  ·  {bitrate_kbps} kbps  ·  {video_encoder_desc} [{video_encoder}]  ·  {audio}  ·  delay {delay}  ·  {} destination{}{}",
+                    destinations.len(),
+                    if destinations.len() == 1 { "" } else { "s" },
+                    if recording { "  ·  recording" } else { "" }
+                ));
+                l.specs_fallback = fallback;
+                if fallback {
+                    self.toast = Some((Instant::now(), format!("Configured encoder failed; running on {video_encoder_desc}. It will be tried first from now on."), false));
+                }
+                // Remember what worked so "auto" goes straight to it next launch.
+                let mut st = Settings::load();
+                if st.preferred_video_encoder != video_encoder {
+                    st.preferred_video_encoder = video_encoder;
+                    st.save();
+                }
+            }
             StatsEvent::Error(e) => l.last_error = Some((Instant::now(), e)),
             StatsEvent::Warning(w) => {
                 l.warnings.push((Instant::now(), w));
@@ -435,6 +467,16 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let state = self.engine.state();
+        self.top_controls(ui, state);
+        if state != EngineState::Idle
+            && let Some(specs) = &self.live.specs
+        {
+            let color = if self.live.specs_fallback { Color32::from_rgb(230, 160, 30) } else { Color32::from_rgb(140, 200, 140) };
+            ui.label(RichText::new(format!("RUNNING WITH:  {specs}")).color(color).small());
+        }
+    }
+
+    fn top_controls(&mut self, ui: &mut egui::Ui, state: EngineState) {
         ui.horizontal(|ui| {
             ui.heading("Restream");
             ui.separator();
@@ -579,6 +621,11 @@ impl App {
             && t.elapsed() < Duration::from_secs(30) {
                 ui.label(RichText::new(format!("ERROR: {e}")).color(Color32::RED));
             }
+        if let Some((t, w)) = self.live.warnings.last()
+            && t.elapsed() < Duration::from_secs(30)
+        {
+            ui.label(RichText::new(format!("warning: {w}")).color(Color32::from_rgb(230, 160, 30)).small());
+        }
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
@@ -732,12 +779,24 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("Encoder");
             egui::ComboBox::from_id_salt("venc").selected_text(e.video_encoder.as_str()).show_ui(ui, |ui| {
-                ui.selectable_value(&mut e.video_encoder, "auto".to_string(), "auto (best available)");
+                ui.selectable_value(&mut e.video_encoder, "auto".to_string(), "auto (best available; remembers what worked)");
                 for v in &self.video_encoders {
-                    ui.selectable_value(&mut e.video_encoder, v.clone(), v.as_str());
+                    let label = format!("{v}  —  {}", restream_core::pipeline::encoder_description(v));
+                    ui.selectable_value(&mut e.video_encoder, v.clone(), label);
                 }
             });
-            ui.label(RichText::new(format!("available: {}", self.video_encoders.join(", "))).weak().small());
+        });
+        ui.horizontal(|ui| {
+            let pref = Settings::load().preferred_video_encoder;
+            if !pref.is_empty() {
+                ui.label(RichText::new(format!("auto currently prefers: {pref}  —  {}", restream_core::pipeline::encoder_description(&pref))).weak().small());
+                if ui.small_button("forget").clicked() {
+                    let mut st = Settings::load();
+                    st.preferred_video_encoder.clear();
+                    st.save();
+                    self.engine.set_preferred_video_encoder(None);
+                }
+            }
         });
         ui.horizontal(|ui| {
             ui.label("Resolution");
