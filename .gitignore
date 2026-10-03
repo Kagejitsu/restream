@@ -3,3 +3,4 @@
 *.log
 /tests/out/
 /dist/
+/release/

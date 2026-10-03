@@ -354,6 +354,7 @@ fn sources(profile: &Profile) -> Result<(String, Option<String>)> {
         // An empty selector must mean "default device": passing device-path=""
         // makes mfvideosrc look for a device whose path is "" and fail.
         VideoSource::MediaFoundation { device, format } => {
+            let device = &unescape_id(device);
             let sel = if device.is_empty() {
                 String::new()
             } else if device.starts_with("\\\\?\\") || device.starts_with('@') {
@@ -364,13 +365,21 @@ fn sources(profile: &Profile) -> Result<(String, Option<String>)> {
             format!("mfvideosrc{sel} name=vsrc{}", caps_fragment(format))
         }
         VideoSource::DirectShow { device, format } => {
-            let sel = if device.is_empty() { String::new() } else { format!(" device-name=\"{}\"", escape(device)) };
+            let device = unescape_id(device);
+            let sel = if device.is_empty() {
+                String::new()
+            } else if device.starts_with("@device:") {
+                format!(" device=\"{}\"", escape(&device))
+            } else {
+                format!(" device-name=\"{}\"", escape(&device))
+            };
             format!("dshowvideosrc{sel} name=vsrc{}", caps_fragment(format))
         }
         // The KS device provider reports paths under the camera interface
         // class while ksvideosrc enumerates the video class, so paths never
         // match; names do.
         VideoSource::KernelStreaming { device, format } => {
+            let device = &unescape_id(device);
             let sel = if device.is_empty() {
                 String::new()
             } else if device.starts_with("\\\\?\\") {
@@ -403,7 +412,8 @@ fn sources(profile: &Profile) -> Result<(String, Option<String>)> {
             }
         }
         AudioSource::Wasapi { device, loopback } => {
-            let dev = if device.is_empty() { String::new() } else { format!(" device=\"{}\"", escape(device)) };
+            let device = unescape_id(device);
+            let dev = if device.is_empty() { String::new() } else { format!(" device=\"{}\"", escape(&device)) };
             Some(format!("wasapi2src{dev} loopback={loopback} low-latency=true name=asrc"))
         }
         AudioSource::DeckLink { device_number } => Some(format!("decklinkaudiosrc device-number={device_number} name=asrc")),
@@ -413,6 +423,39 @@ fn sources(profile: &Profile) -> Result<(String, Option<String>)> {
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Undo GStreamer's string serialisation (`\{`, `\}`, `\#`, `\&`, `\@`,
+/// `\\` ...) that leaks into device ids copied from older listings or pasted
+/// from `gst-device-monitor` output. A string is treated as serialised only
+/// when it escapes a character that never needs a backslash in a real id, so
+/// genuine Windows paths (`\\?\usb#...\global`) pass through untouched.
+fn unescape_id(s: &str) -> String {
+    // Raw DirectShow monikers legitimately contain `}\{`, so `\{` alone is not
+    // proof. Serialised strings start with an escaped `@`/`{` or a doubled
+    // `\\?\` prefix, or escape characters raw ids never escape.
+    let serialised = s.starts_with("\\@")
+        || s.starts_with("\\{")
+        || s.starts_with("\\\\\\\\")
+        || s.contains("\\}")
+        || s.contains("\\#")
+        || s.contains("\\&");
+    if !serialised {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(n) => out.push(n),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn describe(profile: &Profile, venc: &str, aenc: Option<&str>) -> Result<String> {
@@ -708,6 +751,23 @@ mod tests {
         p.input.video = VideoSource::KernelStreaming { device: "ASUS 5M webcam".into(), format: Default::default() };
         let d = describe(&p, "x264enc", None).unwrap();
         assert!(d.contains("ksvideosrc device-name=\"ASUS 5M webcam\""), "{d}");
+    }
+
+    #[test]
+    fn device_ids_are_unescaped_and_dshow_paths_use_device() {
+        use crate::config::{AudioSource, VideoSource};
+        assert_eq!(unescape_id("\\{0.0.1.0\\}.\\{bf41\\}"), "{0.0.1.0}.{bf41}");
+        assert_eq!(unescape_id("\\\\?\\usb#vid_636e\\global"), "\\\\?\\usb#vid_636e\\global");
+        assert_eq!(unescape_id("\\@device:sw:\\{860B\\}\\\\\\{A3FC\\}"), "@device:sw:{860B}\\{A3FC}");
+        let mut p = Profile::default();
+        p.input.video = VideoSource::DirectShow { device: "@device:sw:{860B}\\{A3FC}".into(), format: Default::default() };
+        p.input.audio = AudioSource::Wasapi { device: "\\{0.0.1.0\\}.\\{bf41\\}".into(), loopback: false };
+        let d = describe(&p, "x264enc", Some("avenc_aac")).unwrap();
+        assert!(d.contains("dshowvideosrc device=\"@device:sw:{860B}\\\\{A3FC}\""), "{d}");
+        assert!(d.contains("wasapi2src device=\"{0.0.1.0}.{bf41}\""), "{d}");
+        p.input.video = VideoSource::DirectShow { device: "OBS Virtual Camera".into(), format: Default::default() };
+        let d = describe(&p, "x264enc", Some("avenc_aac")).unwrap();
+        assert!(d.contains("dshowvideosrc device-name=\"OBS Virtual Camera\""), "{d}");
     }
 
     #[test]

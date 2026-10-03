@@ -89,6 +89,7 @@ puts the profile (keys blanked) and the recent log on the clipboard for support.
 | Destination stays *reconnecting* | Wrong server/key, or the platform's ingest rejects the stream (bitrate/keyframe). Hover the destination for the error. RTMPS needs the port in the URL for Facebook (`:443`). |
 | ON AIR but the platform shows nothing | The platform is still buffering; most show the stream 10–30 s after the first frame arrives. |
 | Audio out of sync | Set *Audio offset*. Negative if audio is late. |
+| Camera or microphone "Could not open" / "Failed to start" with nothing else wrong | Windows privacy: Settings → Privacy & security → Camera (and Microphone) → turn on access and "Let desktop apps access your camera/microphone". Also make sure no other app (Windows Hello, a browser tab, OBS itself for a webcam) is holding the device. |
 | OBS Virtual Camera has no audio | By design. See Inputs. |
 
 ## Command line (optional)
