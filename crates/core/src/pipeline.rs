@@ -164,19 +164,37 @@ impl Pipeline {
         ))
     }
 
+    /// Prefer the element's own error message (e.g. "could not open device X")
+    /// over the generic state-change failure when one is on the bus.
+    fn start_failure_reason(&self, fallback: &str) -> String {
+        if let Some(bus) = self.pipeline.bus() {
+            while let Some(msg) = bus.pop_filtered(&[gst::MessageType::Error]) {
+                if let gst::MessageView::Error(e) = msg.view() {
+                    let src = e.src().map(|s| s.name().to_string()).unwrap_or_default();
+                    let dbg = e.debug().map(|d| d.to_string()).unwrap_or_default();
+                    let detail = dbg.lines().rev().find(|l| !l.trim().is_empty() && !l.contains("gstbasesrc.c")).unwrap_or("").trim().to_string();
+                    return if detail.is_empty() { format!("{src}: {}", e.error()) } else { format!("{src}: {} — {detail}", e.error()) };
+                }
+            }
+        }
+        fallback.to_string()
+    }
+
     /// The underlying GStreamer pipeline (for attaching branches).
     pub fn gst(&self) -> &gst::Pipeline {
         &self.pipeline
     }
 
     pub fn start(&self) -> Result<()> {
-        self.pipeline.set_state(gst::State::Playing).context("starting pipeline")?;
+        if let Err(e) = self.pipeline.set_state(gst::State::Playing) {
+            bail!("{}", self.start_failure_reason(&format!("starting pipeline: {e}")));
+        }
         // Wait for the state change to actually complete before anyone
         // attaches branches; a live pipeline reaches PLAYING without preroll.
         let (res, current, pending) = self.pipeline.state(gst::ClockTime::from_seconds(5));
         match res {
             Ok(_) if current == gst::State::Playing => {}
-            _ => bail!("pipeline did not reach PLAYING (state {current:?}, pending {pending:?}, result {res:?})"),
+            _ => bail!("{}", self.start_failure_reason(&format!("pipeline did not reach PLAYING (state {current:?}, pending {pending:?}, result {res:?})"))),
         }
         info!(target: "pipeline", "playing (video: {}, audio: {:?})", self.video_encoder, self.audio_encoder);
         Ok(())

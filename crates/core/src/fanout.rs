@@ -83,7 +83,12 @@ pub async fn releaser_task(
     let mut tap: Option<mpsc::Sender<Outbound>> = None;
     let mut stats_tick = tokio::time::interval(Duration::from_millis(500));
     let mut first_release: Option<Instant> = None;
-    let mut armed = false;
+    // With a delay shorter than the pre-connect window there is no idle
+    // period to avoid: connect right away so the first seconds are not lost.
+    let mut armed = cfg.delay <= PRECONNECT;
+    if armed {
+        for d in &dests { let _ = d.try_send(Outbound::Prepare); }
+    }
     // After a Cut nothing more may go out, including the encoder flush that
     // follows the EOS we send right after it.
     let mut cut = false;

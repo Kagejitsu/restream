@@ -232,6 +232,12 @@ impl Engine {
             self.stats.clone(),
         ));
 
+        if let Err(e) = pipeline.start() {
+            // Releaser and destination tasks end by themselves once the
+            // pipeline (and with it the packet channel) is dropped.
+            let _ = stop_tx.send(true);
+            return Err(e);
+        }
         // ---- state monitor: Filling → OnAir, Draining → Idle ----
         let monitor = {
             let me = Arc::clone(self);
@@ -257,7 +263,6 @@ impl Engine {
             })
         };
 
-        pipeline.start()?;
 
         // ---- recording (attached dynamically; also start/stop-able later) ----
         let recorder: Arc<Mutex<Option<RecordBranch>>> = Arc::new(Mutex::new(None));

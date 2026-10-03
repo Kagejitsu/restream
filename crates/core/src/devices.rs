@@ -41,7 +41,15 @@ pub fn enumerate() -> Vec<DeviceInfo> {
                 .properties()
                 .map(|s| {
                     s.iter()
-                        .filter_map(|(k, v)| v.serialize().ok().map(|v| (k.to_string(), v.to_string())))
+                        .filter_map(|(k, v)| {
+                            // Strings must stay raw: serialising would add GStreamer's
+                            // own escapes (\#, \&, \{ ...) and the id would never match.
+                            let text = match v.get::<String>() {
+                                Ok(t) => t,
+                                Err(_) => v.serialize().ok()?.to_string(),
+                            };
+                            Some((k.to_string(), text))
+                        })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
