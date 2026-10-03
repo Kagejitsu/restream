@@ -1137,6 +1137,10 @@ fn device_picker<'a>(ui: &mut egui::Ui, class: &str, devices: &'a [DeviceInfo], 
 
 /// Best-effort device identifier for the source element's selection property.
 fn device_id(d: &DeviceInfo) -> Option<String> {
+    // Kernel Streaming: select by name (its provider paths never match the source's).
+    if d.element.as_deref() == Some("ksvideosrc") {
+        return Some(d.display_name.clone());
+    }
     for key in ["device.path", "device.id", "device.strid", "api.v4l2.path", "device.name", "device-number", "object.serial", "node.name"] {
         if let Some((_, v)) = d.properties.iter().find(|(k, _)| k == key) {
             return Some(v.trim_matches('"').to_string());

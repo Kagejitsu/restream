@@ -351,14 +351,34 @@ fn sources(profile: &Profile) -> Result<(String, Option<String>)> {
             let t = if target.is_empty() { String::new() } else { format!(" target-object=\"{}\"", escape(target)) };
             format!("pipewiresrc{t} name=vsrc{}", caps_fragment(format))
         }
+        // An empty selector must mean "default device": passing device-path=""
+        // makes mfvideosrc look for a device whose path is "" and fail.
         VideoSource::MediaFoundation { device, format } => {
-            format!("mfvideosrc device-path=\"{}\" name=vsrc{}", escape(device), caps_fragment(format))
+            let sel = if device.is_empty() {
+                String::new()
+            } else if device.starts_with("\\\\?\\") || device.starts_with('@') {
+                format!(" device-path=\"{}\"", escape(device))
+            } else {
+                format!(" device-name=\"{}\"", escape(device))
+            };
+            format!("mfvideosrc{sel} name=vsrc{}", caps_fragment(format))
         }
         VideoSource::DirectShow { device, format } => {
-            format!("dshowvideosrc device-name=\"{}\" name=vsrc{}", escape(device), caps_fragment(format))
+            let sel = if device.is_empty() { String::new() } else { format!(" device-name=\"{}\"", escape(device)) };
+            format!("dshowvideosrc{sel} name=vsrc{}", caps_fragment(format))
         }
+        // The KS device provider reports paths under the camera interface
+        // class while ksvideosrc enumerates the video class, so paths never
+        // match; names do.
         VideoSource::KernelStreaming { device, format } => {
-            format!("ksvideosrc device-path=\"{}\" name=vsrc{}", escape(device), caps_fragment(format))
+            let sel = if device.is_empty() {
+                String::new()
+            } else if device.starts_with("\\\\?\\") {
+                format!(" device-path=\"{}\"", escape(device))
+            } else {
+                format!(" device-name=\"{}\"", escape(device))
+            };
+            format!("ksvideosrc{sel} name=vsrc{}", caps_fragment(format))
         }
         VideoSource::DeckLink { device_number, mode, connection } => {
             format!("decklinkvideosrc device-number={device_number} mode={mode} connection={connection} name=vsrc")
@@ -671,6 +691,23 @@ mod tests {
         let d = describe(&p, "x264enc", None).unwrap();
         assert!(!d.contains("aenc"));
         assert!(!d.contains("flv.audio"));
+    }
+
+    #[test]
+    fn windows_device_selectors() {
+        use crate::config::VideoSource;
+        let mut p = Profile::default();
+        p.input.audio = AudioSource::None;
+        p.input.video = VideoSource::MediaFoundation { device: String::new(), format: Default::default() };
+        let d = describe(&p, "x264enc", None).unwrap();
+        assert!(d.contains("mfvideosrc name=vsrc"), "{d}");
+        assert!(!d.contains("device-path"), "{d}");
+        p.input.video = VideoSource::MediaFoundation { device: "\\\\?\\usb#vid_636e&pid_0bda#{e53}\\global".into(), format: Default::default() };
+        let d = describe(&p, "x264enc", None).unwrap();
+        assert!(d.contains("mfvideosrc device-path=\"\\\\\\\\?\\\\usb#vid_636e&pid_0bda#{e53}\\\\global\""), "{d}");
+        p.input.video = VideoSource::KernelStreaming { device: "ASUS 5M webcam".into(), format: Default::default() };
+        let d = describe(&p, "x264enc", None).unwrap();
+        assert!(d.contains("ksvideosrc device-name=\"ASUS 5M webcam\""), "{d}");
     }
 
     #[test]
