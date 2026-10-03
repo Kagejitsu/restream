@@ -13,6 +13,7 @@ use restream_core::{Engine, EngineState, Profile, StatsEvent};
 use tokio::sync::broadcast;
 
 use crate::logbuf::LogBuffer;
+use crate::settings::Settings;
 use crate::{keys, paths};
 
 const PRESETS: &[(&str, &str)] = &[
@@ -922,7 +923,19 @@ impl App {
             if ui.button("Clear").clicked() {
                 self.logs.clear();
             }
-            ui.label(RichText::new(format!("log file: {}", paths::logs_dir().display())).weak().small());
+            if ui.button("Dump devices").on_hover_text("Write every capture device and its properties to the log").clicked() {
+                for d in &self.devices {
+                    tracing::info!(target: "devices", "[{}] {} element={:?} props={:?} formats={:?}", d.class, d.display_name, d.element, d.properties, d.formats);
+                }
+                self.toast(format!("{} devices written to the log", self.devices.len()), false);
+            }
+        });
+        ui.horizontal(|ui| {
+            let mut st = Settings::load();
+            if ui.checkbox(&mut st.debug_logging, "Debug logging (app + GStreamer; restart to apply)").changed() {
+                st.save();
+            }
+            ui.label(RichText::new(format!("log folder: {}", paths::logs_dir().display())).weak().small());
         });
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
             for line in self.logs.snapshot() {
@@ -1241,19 +1254,19 @@ fn list_profiles() -> Vec<String> {
 }
 
 fn load_last_profile() -> Profile {
-    let name = std::fs::read_to_string(paths::settings_file())
-        .ok()
-        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("last_profile = ").map(|v| v.trim_matches('"').to_string())));
-    if let Some(n) = name
-        && let Ok(p) = Profile::load(&paths::profiles_dir().join(format!("{n}.toml"))) {
-            return p;
-        }
+    let name = Settings::load().last_profile;
+    if !name.is_empty()
+        && let Ok(p) = Profile::load(&paths::profiles_dir().join(format!("{name}.toml")))
+    {
+        return p;
+    }
     let mut p = Profile::default();
     p.recording.directory = paths::default_recording_dir();
     p
 }
 
 fn save_last_profile_name(name: &str) {
-    let _ = std::fs::create_dir_all(paths::config_dir());
-    let _ = std::fs::write(paths::settings_file(), format!("last_profile = \"{name}\"\n"));
+    let mut s = Settings::load();
+    s.last_profile = name.to_string();
+    s.save();
 }

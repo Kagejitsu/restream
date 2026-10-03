@@ -5,6 +5,7 @@ mod app;
 mod keys;
 mod logbuf;
 mod paths;
+mod settings;
 
 use std::sync::Arc;
 
@@ -15,9 +16,29 @@ fn main() -> anyhow::Result<()> {
     // ---- logging: rolling file + in-app ring buffer (+ stderr in debug) ----
     let logs = logbuf::LogBuffer::new();
     std::fs::create_dir_all(paths::logs_dir()).ok();
+    let settings = settings::Settings::load();
+    if settings.debug_logging {
+        // GStreamer's own debug log: the only place device-open failures explain themselves.
+        let gst_log = paths::logs_dir().join("gstreamer.log");
+        // SAFETY: before any thread exists.
+        unsafe {
+            if std::env::var_os("GST_DEBUG").is_none() {
+                std::env::set_var("GST_DEBUG", "2,mf*:6,ks*:6,wasapi*:6,dshow*:6,decklink*:5,amf*:4,nv*:4,qsv*:4,GST_ELEMENT_FACTORY:4,default:3");
+            }
+            if std::env::var_os("GST_DEBUG_FILE").is_none() {
+                std::env::set_var("GST_DEBUG_FILE", &gst_log);
+            }
+            std::env::set_var("GST_DEBUG_NO_COLOR", "1");
+        }
+    }
     let file = tracing_appender::rolling::daily(paths::logs_dir(), "restream.log");
     let (file_nb, _file_guard) = tracing_appender::non_blocking(file);
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rml_rtmp=warn"));
+    let default_filter = if settings.debug_logging {
+        "debug,rml_rtmp=info,wgpu_core=warn,wgpu_hal=warn,naga=warn,egui_wgpu=info,eframe=info,winit=info,sctk=info,calloop=info"
+    } else {
+        "info,rml_rtmp=warn"
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
     let registry = tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(file_nb))
@@ -46,6 +67,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
     restream_core::init()?;
+    tracing::info!("Restream {} starting; debug logging {}", env!("CARGO_PKG_VERSION"), if settings.debug_logging { "ON (gstreamer.log beside restream.log)" } else { "off" });
     let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(4).build()?);
 
     let options = eframe::NativeOptions {
