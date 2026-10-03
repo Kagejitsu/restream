@@ -9,6 +9,7 @@ rtsp: no
 webrtc: no
 hls: no
 srt: no
+moq: no
 rtmp: yes
 rtmpAddress: 127.0.0.1:1935
 pathDefaults:

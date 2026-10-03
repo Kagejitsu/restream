@@ -4,3 +4,5 @@
 /tests/out/
 /dist/
 /release/
+/auto.crt
+/auto.key
