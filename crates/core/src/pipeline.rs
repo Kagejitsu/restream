@@ -59,6 +59,9 @@ const AUDIO_ENCODER_PREFERENCE: &[&str] = &["fdkaacenc", "avenc_aac", "mfaacenc"
 pub struct Pipeline {
     pipeline: gst::Pipeline,
     bus_stop: Arc<AtomicBool>,
+    /// Last ERROR text seen by the bus thread (it drains the bus, so
+    /// `start()` cannot pop the message itself).
+    last_error: Arc<parking_lot::Mutex<Option<String>>>,
     bus_thread: Option<JoinHandle<()>>,
     audio_tee_pad: Option<gst::Pad>,
     pub video_encoder: String,
@@ -73,9 +76,57 @@ pub struct Outputs {
 }
 
 /// Which encoders are usable on this machine (factory exists *and* an
-/// instance can be created, which is what HW plugins gate on).
+/// instance can be created, which is what HW plugins gate on), in order of
+/// preference. Media Foundation H.264 encoders are slotted by the GPU vendor
+/// named in their description: NVIDIA's MFT right after the NVENC elements
+/// (it works when the NVENC SDK version is rejected by the driver), Intel's
+/// after QSV, AMD's after AMF, unknown ones before the software encoders.
 pub fn available_video_encoders() -> Vec<String> {
-    VIDEO_ENCODER_PREFERENCE.iter().filter(|n| element_usable(n)).map(|s| s.to_string()).collect()
+    let mf = media_foundation_h264_encoders();
+    let pick_mf = |vendor: &str| -> Vec<String> {
+        mf.iter().filter(|(_, desc)| desc.to_ascii_uppercase().contains(vendor)).map(|(n, _)| n.clone()).collect()
+    };
+    let mut order: Vec<String> = Vec::new();
+    let mut push = |n: String| {
+        if !order.contains(&n) {
+            order.push(n);
+        }
+    };
+    for n in ["nvd3d11h264enc", "nvh264enc", "nvcudah264enc"] {
+        push(n.into());
+    }
+    pick_mf("NVIDIA").into_iter().for_each(&mut push);
+    push("qsvh264enc".into());
+    pick_mf("INTEL").into_iter().for_each(&mut push);
+    push("amfh264enc".into());
+    pick_mf("AMD").into_iter().for_each(&mut push);
+    push("vah264enc".into());
+    mf.iter().map(|(n, _)| n.clone()).for_each(&mut push);
+    for n in ["x264enc", "openh264enc"] {
+        push(n.into());
+    }
+    order.into_iter().filter(|n| element_usable(n)).collect()
+}
+
+/// (element name, long description) of every Media Foundation H.264 encoder
+/// element the registry offers (`mfh264enc`, `mfh264device1enc`, ...).
+fn media_foundation_h264_encoders() -> Vec<(String, String)> {
+    let registry = gst::Registry::get();
+    let mut v: Vec<(String, String)> = registry
+        .features_by_plugin("mediafoundation")
+        .into_iter()
+        .filter_map(|f| f.downcast::<gst::ElementFactory>().ok())
+        .filter(|f| {
+            let n = f.name();
+            n.starts_with("mfh264") && n.ends_with("enc")
+        })
+        .map(|f| {
+            let desc = f.metadata("long-name").map(|s| s.to_string()).unwrap_or_default();
+            (f.name().to_string(), desc)
+        })
+        .collect();
+    v.sort();
+    v
 }
 
 pub fn available_audio_encoders() -> Vec<String> {
@@ -154,13 +205,15 @@ impl Pipeline {
         // --- bus watcher thread ---
         let bus_stop = Arc::new(AtomicBool::new(false));
         let bus = pipeline.bus().ok_or_else(|| anyhow!("no bus"))?;
+        let last_error: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
         let bus_thread = {
             let stop = Arc::clone(&bus_stop);
             let tx = tx.clone();
             let stats = stats.clone();
+            let slot = Arc::clone(&last_error);
             std::thread::Builder::new()
                 .name("gst-bus".into())
-                .spawn(move || bus_loop(bus, stop, Some(tx), stats))
+                .spawn(move || bus_loop(bus, stop, Some(tx), stats, slot))
                 .context("spawning bus thread")?
         };
 
@@ -168,6 +221,7 @@ impl Pipeline {
             Self {
                 pipeline,
                 bus_stop,
+                last_error,
                 bus_thread: Some(bus_thread),
                 audio_tee_pad,
                 video_encoder: venc,
@@ -181,6 +235,13 @@ impl Pipeline {
     /// Prefer the element's own error message (e.g. "could not open device X")
     /// over the generic state-change failure when one is on the bus.
     fn start_failure_reason(&self, fallback: &str) -> String {
+        // The bus thread usually wins the race for the message; give it a moment.
+        for _ in 0..30 {
+            if let Some(e) = self.last_error.lock().clone() {
+                return e;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         bus_error_reason(&self.pipeline, fallback)
     }
 }
@@ -300,7 +361,8 @@ impl PreviewPipeline {
         let bus = pipeline.bus().ok_or_else(|| anyhow!("no bus"))?;
         let bus_thread = {
             let stop = Arc::clone(&bus_stop);
-            std::thread::Builder::new().name("gst-preview-bus".into()).spawn(move || bus_loop(bus, stop, None, stats))?
+            let slot = Arc::new(parking_lot::Mutex::new(None));
+            std::thread::Builder::new().name("gst-preview-bus".into()).spawn(move || bus_loop(bus, stop, None, stats, slot))?
         };
         pipeline.set_state(gst::State::Playing).context("starting preview")?;
         let (res, current, _) = pipeline.state(gst::ClockTime::from_seconds(5));
@@ -682,7 +744,7 @@ fn hook_preview_sink(pipeline: &gst::Pipeline, slot: Arc<PreviewSlot>) -> Result
 
 /// Bus watcher. With `tx` = None (preview pipeline) errors are reported as
 /// warnings and nothing is forwarded to a releaser.
-fn bus_loop(bus: gst::Bus, stop: Arc<AtomicBool>, tx: Option<mpsc::UnboundedSender<Inbound>>, stats: StatsBus) {
+fn bus_loop(bus: gst::Bus, stop: Arc<AtomicBool>, tx: Option<mpsc::UnboundedSender<Inbound>>, stats: StatsBus, last_error: Arc<parking_lot::Mutex<Option<String>>>) {
     use gst::MessageView;
     while !stop.load(Ordering::Relaxed) {
         let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) else { continue };
@@ -696,6 +758,15 @@ fn bus_loop(bus: gst::Bus, stop: Arc<AtomicBool>, tx: Option<mpsc::UnboundedSend
             MessageView::Error(e) => {
                 let src = e.src().map(|s| s.path_string().to_string()).unwrap_or_default();
                 let text = format!("{src}: {} ({})", e.error(), e.debug().map(|d| d.to_string()).unwrap_or_default());
+                {
+                    let short = e.src().map(|s| s.name().to_string()).unwrap_or_default();
+                    let dbg = e.debug().map(|d| d.to_string()).unwrap_or_default();
+                    let detail = dbg.lines().rev().find(|l| !l.trim().is_empty() && !l.contains("gstbasesrc.c")).unwrap_or("").trim().to_string();
+                    let mut slot = last_error.lock();
+                    if slot.is_none() {
+                        *slot = Some(if detail.is_empty() { format!("{short}: {}", e.error()) } else { format!("{short}: {} — {detail}", e.error()) });
+                    }
+                }
                 match &tx {
                     Some(tx) => {
                         tracing::error!(target: "pipeline", "{text}");

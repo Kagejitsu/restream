@@ -236,7 +236,8 @@ impl Engine {
                     }
                     Err(e) => {
                         let text = format!("{e:#}");
-                        let encoder_fault = text.contains("venc") || text.to_lowercase().contains("encod");
+                        let lower = text.to_lowercase();
+                        let encoder_fault = lower.contains("venc") || lower.contains("encod") || lower.contains("session");
                         warn!(target: "engine", "start with {cand} failed: {text}");
                         last_err = Some(e);
                         if !encoder_fault {
