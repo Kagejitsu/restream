@@ -39,6 +39,12 @@ async fn main() -> Result<()> {
                 unsafe {
                     std::env::set_var("GST_PLUGIN_PATH", &plugins);
                     std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &plugins);
+                    // Out-of-process plugin scanner: a crashing plugin then
+                    // only kills the helper, and the registry scan is faster.
+                    let scanner = dir.join("gst-plugin-scanner.exe");
+                    if scanner.is_file() {
+                        std::env::set_var("GST_PLUGIN_SCANNER", &scanner);
+                    }
                 }
             }
         }

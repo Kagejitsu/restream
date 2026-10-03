@@ -21,6 +21,7 @@ cp "$REL/restream.exe" "$DIST/bin/restream.exe"
 cp "$REL/restream-cli.exe" "$DIST/bin/restream-cli.exe"
 cp "$GST"/bin/*.dll "$DIST/bin/"
 cp "$GST/bin/gst-inspect-1.0.exe" "$DIST/bin/" 2>/dev/null || true
+cp "$GST/libexec/gstreamer-1.0/gst-plugin-scanner.exe" "$DIST/bin/" 2>/dev/null || true
 
 plugins=(coreelements app typefindfunctions playback
   videoconvertscale videorate videotestsrc audiotestsrc audioconvert audioresample level

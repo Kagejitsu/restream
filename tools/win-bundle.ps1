@@ -20,6 +20,7 @@ Copy-Item "$root\target\release\restream.exe" "$dist\bin\"
 Copy-Item "$root\target\release\restream-cli.exe" "$dist\bin\"
 Copy-Item "$gst\bin\*.dll" "$dist\bin\"
 Copy-Item "$gst\bin\gst-inspect-1.0.exe" "$dist\bin\" -ErrorAction SilentlyContinue
+Copy-Item "$gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe" "$dist\bin\" -ErrorAction SilentlyContinue
 
 # Plugins we use. Missing ones (e.g. no nvcodec on a non-NVIDIA box) are skipped.
 $plugins = @(
