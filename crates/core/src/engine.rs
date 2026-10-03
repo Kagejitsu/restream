@@ -27,7 +27,7 @@ use tracing::{info, warn};
 
 use crate::config::Profile;
 use crate::fanout::{self, DestSpec, Outbound, ReleaseCommand, ReleaserConfig};
-use crate::pipeline::Pipeline;
+use crate::pipeline::{Pipeline, PreviewPipeline};
 use crate::monitor;
 use crate::preview::PreviewSlot;
 use crate::record::{self, RecordBranch};
@@ -66,6 +66,8 @@ pub struct Engine {
     monitor_preview: Arc<PreviewSlot>,
     monitor_enabled: AtomicBool,
     session: tokio::sync::Mutex<Option<Session>>,
+    /// Input preview while idle (never alive at the same time as a session).
+    input_preview: Mutex<Option<PreviewPipeline>>,
 }
 
 impl Engine {
@@ -80,6 +82,7 @@ impl Engine {
             monitor_preview: PreviewSlot::new(),
             monitor_enabled: AtomicBool::new(false),
             session: tokio::sync::Mutex::new(None),
+            input_preview: Mutex::new(None),
         })
     }
 
@@ -140,12 +143,45 @@ impl Engine {
         }
     }
 
+    /// Show the configured input in the live preview (and audio meters)
+    /// without encoding or streaming. Only while idle. Blocking (opens devices).
+    pub fn start_input_preview(&self) -> Result<()> {
+        if self.state() != EngineState::Idle {
+            bail!("a session is running");
+        }
+        let mut slot = self.input_preview.lock();
+        if slot.is_some() {
+            return Ok(());
+        }
+        let profile = self.profile.lock().clone();
+        let p = PreviewPipeline::start(&profile, Arc::clone(&self.preview), self.stats.clone())?;
+        *slot = Some(p);
+        Ok(())
+    }
+
+    /// Stop the idle input preview and release the devices. Blocking.
+    pub fn stop_input_preview(&self) {
+        if let Some(mut p) = self.input_preview.lock().take() {
+            p.stop();
+        }
+        self.preview.clear();
+    }
+
+    pub fn input_preview_running(&self) -> bool {
+        self.input_preview.lock().is_some()
+    }
+
     /// Start capture, encoding, recording and the delay buffer. Destinations
     /// connect immediately and wait for the first released keyframe.
     pub async fn go_live(self: &Arc<Self>) -> Result<()> {
         let mut guard = self.session.lock().await;
         if guard.is_some() {
             bail!("already running");
+        }
+        // The devices are exclusive: hand them from the preview to the session.
+        {
+            let me = Arc::clone(self);
+            tokio::task::spawn_blocking(move || me.stop_input_preview()).await?;
         }
         let profile = self.profile.lock().clone();
 

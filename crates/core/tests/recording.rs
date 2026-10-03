@@ -167,3 +167,29 @@ async fn live_bitrate_change_reaches_the_encoder() {
     engine.wait_idle().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_input_preview_then_go_live() {
+    restream_core::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("restream-pvtest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let engine = Engine::new(test_profile(&dir, "mkv"));
+    engine.start_input_preview().unwrap();
+    assert!(engine.input_preview_running());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let f = engine.preview().take_newer(0).expect("preview frame while idle");
+    assert_eq!((f.width, f.height), (960, 540));
+    // Go live must take the devices over from the preview.
+    engine.go_live().await.unwrap();
+    assert!(!engine.input_preview_running());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(engine.preview().latest_seq() > f.seq, "live preview frames after go live");
+    engine.stop_cut().await.unwrap();
+    engine.wait_idle().await;
+    // And the preview can come back afterwards.
+    engine.start_input_preview().unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(engine.input_preview_running());
+    engine.stop_input_preview();
+    let _ = std::fs::remove_dir_all(&dir);
+}

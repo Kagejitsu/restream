@@ -146,7 +146,7 @@ impl Pipeline {
             let stats = stats.clone();
             std::thread::Builder::new()
                 .name("gst-bus".into())
-                .spawn(move || bus_loop(bus, stop, tx, stats))
+                .spawn(move || bus_loop(bus, stop, Some(tx), stats))
                 .context("spawning bus thread")?
         };
 
@@ -220,6 +220,70 @@ impl Pipeline {
 }
 
 impl Drop for Pipeline {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+// ------------------------------------------------------- input preview ---
+
+/// Source → scaler → RGBA frames (+ audio meter). No encoder, no outputs.
+/// Runs while idle so the operator can check the input; must be stopped
+/// before the real pipeline opens the same devices.
+pub struct PreviewPipeline {
+    pipeline: gst::Pipeline,
+    bus_stop: Arc<AtomicBool>,
+    bus_thread: Option<JoinHandle<()>>,
+}
+
+impl PreviewPipeline {
+    pub fn start(profile: &Profile, preview: Arc<PreviewSlot>, stats: StatsBus) -> Result<Self> {
+        let (vsrc, asrc) = sources(profile)?;
+        let mut d = format!(
+            "{vsrc} ! queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 leaky=downstream ! videoconvert ! videoscale \
+             ! video/x-raw,format=RGBA,width={pw},height={ph},pixel-aspect-ratio=1/1 ! appsink name=psink max-buffers=1 drop=true sync=false",
+            pw = PREVIEW_WIDTH,
+            ph = PREVIEW_HEIGHT,
+        );
+        if let Some(asrc) = asrc {
+            d.push_str(&format!(" {asrc} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 leaky=downstream ! audioconvert ! level name=lvl interval=100000000 ! fakesink sync=false"));
+        }
+        debug!(target: "preview", "launch: {d}");
+        let pipeline = gst::parse::launch(&d)
+            .context("building preview pipeline")?
+            .downcast::<gst::Pipeline>()
+            .map_err(|_| anyhow!("not a pipeline"))?;
+        hook_preview_sink(&pipeline, preview)?;
+        let bus_stop = Arc::new(AtomicBool::new(false));
+        let bus = pipeline.bus().ok_or_else(|| anyhow!("no bus"))?;
+        let bus_thread = {
+            let stop = Arc::clone(&bus_stop);
+            std::thread::Builder::new().name("gst-preview-bus".into()).spawn(move || bus_loop(bus, stop, None, stats))?
+        };
+        pipeline.set_state(gst::State::Playing).context("starting preview")?;
+        let (res, current, _) = pipeline.state(gst::ClockTime::from_seconds(5));
+        if res.is_err() || current != gst::State::Playing {
+            let _ = pipeline.set_state(gst::State::Null);
+            bus_stop.store(true, Ordering::Relaxed);
+            bail!("input preview could not start (device busy or missing?)");
+        }
+        info!(target: "preview", "input preview running");
+        Ok(Self { pipeline, bus_stop, bus_thread: Some(bus_thread) })
+    }
+
+    pub fn stop(&mut self) {
+        if self.bus_stop.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let _ = self.pipeline.set_state(gst::State::Null);
+        if let Some(t) = self.bus_thread.take() {
+            let _ = t.join();
+        }
+        info!(target: "preview", "input preview stopped");
+    }
+}
+
+impl Drop for PreviewPipeline {
     fn drop(&mut self) {
         self.stop();
     }
@@ -508,22 +572,35 @@ fn hook_preview_sink(pipeline: &gst::Pipeline, slot: Arc<PreviewSlot>) -> Result
 
 // ------------------------------------------------------------------ bus ---
 
-fn bus_loop(bus: gst::Bus, stop: Arc<AtomicBool>, tx: mpsc::UnboundedSender<Inbound>, stats: StatsBus) {
+/// Bus watcher. With `tx` = None (preview pipeline) errors are reported as
+/// warnings and nothing is forwarded to a releaser.
+fn bus_loop(bus: gst::Bus, stop: Arc<AtomicBool>, tx: Option<mpsc::UnboundedSender<Inbound>>, stats: StatsBus) {
     use gst::MessageView;
     while !stop.load(Ordering::Relaxed) {
         let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) else { continue };
         match msg.view() {
             MessageView::Eos(_) => {
                 info!(target: "pipeline", "EOS");
-                let _ = tx.send(Inbound::Eos);
+                if let Some(tx) = &tx {
+                    let _ = tx.send(Inbound::Eos);
+                }
             }
             MessageView::Error(e) => {
                 let src = e.src().map(|s| s.path_string().to_string()).unwrap_or_default();
                 let text = format!("{src}: {} ({})", e.error(), e.debug().map(|d| d.to_string()).unwrap_or_default());
-                tracing::error!(target: "pipeline", "{text}");
-                stats.emit(StatsEvent::Error(text));
-                // Treat as end of input so the session can wind down cleanly.
-                let _ = tx.send(Inbound::Eos);
+                match &tx {
+                    Some(tx) => {
+                        tracing::error!(target: "pipeline", "{text}");
+                        stats.emit(StatsEvent::Error(text));
+                        // Treat as end of input so the session can wind down cleanly.
+                        let _ = tx.send(Inbound::Eos);
+                    }
+                    None => {
+                        warn!(target: "preview", "{text}");
+                        stats.emit(StatsEvent::Warning(format!("input preview: {text}")));
+                        return;
+                    }
+                }
             }
             MessageView::Warning(w) => {
                 let text = format!("{}", w.error());

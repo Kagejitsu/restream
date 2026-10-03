@@ -68,6 +68,7 @@ struct Live {
 
 enum UiEvent {
     Error(String),
+    PreviewStarted(Result<(), String>),
     Devices(Vec<DeviceInfo>),
     Info(String),
 }
@@ -97,6 +98,11 @@ pub struct App {
     toast: Option<(Instant, String, bool)>,
     new_profile_name: String,
     show_keys: bool,
+    /// Show the input while idle (auto-restarts when the input settings change).
+    preview_wanted: bool,
+    preview_input: Option<restream_core::config::Input>,
+    preview_dirty_since: Option<Instant>,
+    preview_starting: bool,
 }
 
 impl App {
@@ -134,6 +140,10 @@ impl App {
             toast: None,
             new_profile_name: String::new(),
             show_keys: false,
+            preview_wanted: true,
+            preview_input: None,
+            preview_dirty_since: None,
+            preview_starting: false,
         };
         app.refresh_devices();
         // Developer conveniences: `restream --go-live [--monitor]`
@@ -174,6 +184,7 @@ impl App {
             }
         });
         self.live = Live::default();
+        self.preview_input = None;
     }
 
     fn stop(&mut self, cut: bool) {
@@ -211,6 +222,56 @@ impl App {
         if !on {
             self.mon_tex = None;
             self.mon_seq = 0;
+        }
+    }
+
+    /// Keep the idle input preview in step with the wish and the settings:
+    /// start it when idle, restart it ~0.7 s after the input settings change,
+    /// stop it when unwanted.
+    fn tick_input_preview(&mut self) {
+        let idle = self.engine.state() == EngineState::Idle;
+        let running = self.engine.input_preview_running();
+        if !idle || !self.preview_wanted {
+            if running && !idle {
+                // go_live stops it itself; nothing to do
+            } else if running {
+                let engine = Arc::clone(&self.engine);
+                self.rt.spawn_blocking(move || engine.stop_input_preview());
+                self.preview_input = None;
+            }
+            return;
+        }
+        if self.preview_starting {
+            return;
+        }
+        let changed = self.preview_input.as_ref() != Some(&self.profile.input);
+        if running && changed {
+            match self.preview_dirty_since {
+                None => self.preview_dirty_since = Some(Instant::now()),
+                Some(t) if t.elapsed() > Duration::from_millis(700) => {
+                    self.preview_dirty_since = None;
+                    let engine = Arc::clone(&self.engine);
+                    self.rt.spawn_blocking(move || engine.stop_input_preview());
+                    self.preview_input = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+        if !running {
+            self.preview_starting = true;
+            self.preview_input = Some(self.profile.input.clone());
+            if let Err(e) = self.engine.set_profile(self.profile.clone()) {
+                self.preview_starting = false;
+                self.toast(e.to_string(), true);
+                return;
+            }
+            let engine = Arc::clone(&self.engine);
+            let tx = self.ui_tx.clone();
+            self.rt.spawn_blocking(move || {
+                let r = engine.start_input_preview().map_err(|e| format!("{e:#}"));
+                let _ = tx.send(UiEvent::PreviewStarted(r));
+            });
         }
     }
 
@@ -286,8 +347,16 @@ impl App {
                     self.devices = d;
                     self.devices_loading = false;
                 }
+                UiEvent::PreviewStarted(r) => {
+                    self.preview_starting = false;
+                    if let Err(e) = r {
+                        self.toast(e, true);
+                        self.preview_wanted = false; // do not retry in a loop
+                    }
+                }
             }
         }
+        self.tick_input_preview();
         // preview textures
         if let Some(f) = self.engine.preview().take_newer(self.live_seq) {
             self.live_seq = f.seq;
@@ -412,6 +481,9 @@ impl App {
                 ui.label(RichText::new(format!("{}  {:.1} MB", fmt_dur(self.live.rec_duration), self.live.rec_bytes as f64 / 1e6)).weak());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if state == EngineState::Idle {
+                    ui.checkbox(&mut self.preview_wanted, "Preview input").on_hover_text("Show the input while idle (no encoding, nothing goes out). Stops by itself when you go live.");
+                }
                 let mut on = self.monitor_on;
                 if ui.checkbox(&mut on, "On-Air monitor").on_hover_text("Decode the delayed output to see exactly what viewers see (costs one decoder).").changed() {
                     self.set_monitor(on);
@@ -426,7 +498,8 @@ impl App {
         let show_mon = self.monitor_on;
         let live_h = if show_mon { avail.y * 0.62 } else { avail.y - 4.0 };
         ui.vertical(|ui| {
-            ui.label(RichText::new("LIVE INPUT (no delay)").strong().small());
+            let title = if self.engine.state() == EngineState::Idle { "INPUT PREVIEW (idle, nothing goes out)" } else { "LIVE INPUT (no delay)" };
+            ui.label(RichText::new(title).strong().small());
             draw_frame(ui, self.live_tex.as_ref(), egui::vec2(avail.x, live_h - 18.0), "no signal");
             if show_mon {
                 let title = if self.live.on_air { "ON AIR (what viewers see)" } else { "ON AIR monitor (waiting for delay to fill)" };
