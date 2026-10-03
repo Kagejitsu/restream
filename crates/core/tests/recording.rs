@@ -193,3 +193,28 @@ async fn idle_input_preview_then_go_live() {
     engine.stop_input_preview();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn encoder_fallback_when_configured_encoder_cannot_start() {
+    restream_core::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("restream-fbtest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut p = test_profile(&dir, "mkv");
+    p.encoder.video_encoder = "nonexistent-h264-enc".into();
+    let engine = Engine::new(p);
+    let mut stats = engine.stats();
+    engine.go_live().await.expect("falls back to a working encoder");
+    let mut warned = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout_at(deadline, stats.recv()).await {
+            Ok(Ok(restream_core::StatsEvent::Warning(w))) if w.contains("instead") => { warned = true; break; }
+            Ok(Ok(_)) => {}
+            _ => break,
+        }
+    }
+    assert!(warned, "a warning naming the substitute encoder must be emitted");
+    engine.stop_cut().await.unwrap();
+    engine.wait_idle().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

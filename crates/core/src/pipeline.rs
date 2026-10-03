@@ -42,6 +42,8 @@ pub const PREVIEW_HEIGHT: u32 = 540;
 
 const VIDEO_ENCODER_PREFERENCE: &[&str] = &[
     "nvh264enc",
+    "nvd3d11h264enc",
+    "nvcudah264enc",
     "amfh264enc",
     "qsvh264enc",
     "vah264enc",
@@ -100,8 +102,18 @@ impl Pipeline {
     /// Build the pipeline for `profile`. Recording is attached separately
     /// (see [`crate::record::RecordBranch`]).
     pub fn build(profile: &Profile, preview: Arc<PreviewSlot>, stats: StatsBus) -> Result<(Self, Outputs)> {
+        Self::build_with_encoder(profile, preview, stats, None)
+    }
+
+    /// Like [`Pipeline::build`] but forcing a particular video encoder
+    /// element (used by the engine's fallback when the preferred one cannot
+    /// open a session).
+    pub fn build_with_encoder(profile: &Profile, preview: Arc<PreviewSlot>, stats: StatsBus, video_encoder: Option<&str>) -> Result<(Self, Outputs)> {
         let enc = &profile.encoder;
-        let venc = pick(&enc.video_encoder, VIDEO_ENCODER_PREFERENCE, "video")?;
+        let venc = match video_encoder {
+            Some(v) => pick(v, VIDEO_ENCODER_PREFERENCE, "video")?,
+            None => pick(&enc.video_encoder, VIDEO_ENCODER_PREFERENCE, "video")?,
+        };
         let has_audio = !matches!(profile.input.audio, AudioSource::None);
         let aenc = if has_audio { Some(pick(&enc.audio_encoder, AUDIO_ENCODER_PREFERENCE, "audio")?) } else { None };
 
@@ -167,7 +179,15 @@ impl Pipeline {
     /// Prefer the element's own error message (e.g. "could not open device X")
     /// over the generic state-change failure when one is on the bus.
     fn start_failure_reason(&self, fallback: &str) -> String {
-        if let Some(bus) = self.pipeline.bus() {
+        bus_error_reason(&self.pipeline, fallback)
+    }
+}
+
+/// Prefer the element's own error message (e.g. "could not open device X")
+/// over a generic state-change failure when one is waiting on the bus.
+fn bus_error_reason(pipeline: &gst::Pipeline, fallback: &str) -> String {
+    {
+        if let Some(bus) = pipeline.bus() {
             while let Some(msg) = bus.pop_filtered(&[gst::MessageType::Error]) {
                 if let gst::MessageView::Error(e) = msg.view() {
                     let src = e.src().map(|s| s.name().to_string()).unwrap_or_default();
@@ -179,7 +199,9 @@ impl Pipeline {
         }
         fallback.to_string()
     }
+}
 
+impl Pipeline {
     /// The underlying GStreamer pipeline (for attaching branches).
     pub fn gst(&self) -> &gst::Pipeline {
         &self.pipeline
@@ -283,7 +305,7 @@ impl PreviewPipeline {
         if res.is_err() || current != gst::State::Playing {
             let _ = pipeline.set_state(gst::State::Null);
             bus_stop.store(true, Ordering::Relaxed);
-            bail!("input preview could not start (device busy or missing?)");
+            bail!("{}", bus_error_reason(&pipeline, "input preview could not start (device busy or missing?)"));
         }
         info!(target: "preview", "input preview running");
         Ok(Self { pipeline, bus_stop, bus_thread: Some(bus_thread) })
@@ -364,16 +386,19 @@ fn sources(profile: &Profile) -> Result<(String, Option<String>)> {
             };
             format!("mfvideosrc{sel} name=vsrc{}", caps_fragment(format))
         }
+        // Media Foundation wraps DirectShow-only devices (OBS Virtual Camera)
+        // and, unlike GStreamer's dshowvideosrc, actually opens them. A
+        // moniker path therefore goes to mfvideosrc; a plain name still uses
+        // dshowvideosrc.
         VideoSource::DirectShow { device, format } => {
             let device = unescape_id(device);
-            let sel = if device.is_empty() {
-                String::new()
-            } else if device.starts_with("@device:") {
-                format!(" device=\"{}\"", escape(&device))
+            if device.starts_with("@device:") {
+                format!("mfvideosrc device-path=\"{}\" name=vsrc{}", escape(&device), caps_fragment(format))
+            } else if device.is_empty() {
+                format!("dshowvideosrc name=vsrc{}", caps_fragment(format))
             } else {
-                format!(" device-name=\"{}\"", escape(&device))
-            };
-            format!("dshowvideosrc{sel} name=vsrc{}", caps_fragment(format))
+                format!("dshowvideosrc device-name=\"{}\" name=vsrc{}", escape(&device), caps_fragment(format))
+            }
         }
         // The KS device provider reports paths under the camera interface
         // class while ksvideosrc enumerates the video class, so paths never
@@ -763,7 +788,7 @@ mod tests {
         p.input.video = VideoSource::DirectShow { device: "@device:sw:{860B}\\{A3FC}".into(), format: Default::default() };
         p.input.audio = AudioSource::Wasapi { device: "\\{0.0.1.0\\}.\\{bf41\\}".into(), loopback: false };
         let d = describe(&p, "x264enc", Some("avenc_aac")).unwrap();
-        assert!(d.contains("dshowvideosrc device=\"@device:sw:{860B}\\\\{A3FC}\""), "{d}");
+        assert!(d.contains("mfvideosrc device-path=\"@device:sw:{860B}\\\\{A3FC}\""), "{d}");
         assert!(d.contains("wasapi2src device=\"{0.0.1.0}.{bf41}\""), "{d}");
         p.input.video = VideoSource::DirectShow { device: "OBS Virtual Camera".into(), format: Default::default() };
         let d = describe(&p, "x264enc", Some("avenc_aac")).unwrap();

@@ -206,8 +206,52 @@ impl Engine {
             bail!("nothing to do: no enabled destinations and recording is off");
         }
 
-        // ---- pipeline ----
-        let (pipeline, outputs) = Pipeline::build(&profile, Arc::clone(&self.preview), self.stats.clone())?;
+        // ---- pipeline, with encoder fallback ----
+        // A hardware encoder can be present yet refuse to open a session
+        // (driver/session limits, remote desktop, odd multi-GPU setups). Try
+        // the configured one first, then the others, so the show goes on.
+        let configured = profile.encoder.video_encoder.clone();
+        let mut candidates: Vec<String> = Vec::new();
+        if configured != "auto" && !configured.is_empty() {
+            candidates.push(configured.clone());
+        }
+        for c in crate::pipeline::available_video_encoders() {
+            if !candidates.contains(&c) {
+                candidates.push(c);
+            }
+        }
+        let mut built: Option<(Pipeline, crate::pipeline::Outputs)> = None;
+        let mut last_err: Option<anyhow::Error> = None;
+        for (i, cand) in candidates.iter().enumerate() {
+            match Pipeline::build_with_encoder(&profile, Arc::clone(&self.preview), self.stats.clone(), Some(cand)) {
+                Ok((p, o)) => match p.start() {
+                    Ok(()) => {
+                        if i > 0 {
+                            let msg = format!("video encoder '{}' could not start; using '{}' instead", candidates[0], cand);
+                            warn!(target: "engine", "{msg}");
+                            self.stats.emit(StatsEvent::Warning(msg));
+                        }
+                        built = Some((p, o));
+                        break;
+                    }
+                    Err(e) => {
+                        let text = format!("{e:#}");
+                        let encoder_fault = text.contains("venc") || text.to_lowercase().contains("encod");
+                        warn!(target: "engine", "start with {cand} failed: {text}");
+                        last_err = Some(e);
+                        if !encoder_fault {
+                            break; // a device problem: trying other encoders will not help
+                        }
+                    }
+                },
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+        }
+        let Some((pipeline, outputs)) = built else {
+            return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no usable video encoder")));
+        };
 
         // ---- fan-out ----
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -232,12 +276,6 @@ impl Engine {
             self.stats.clone(),
         ));
 
-        if let Err(e) = pipeline.start() {
-            // Releaser and destination tasks end by themselves once the
-            // pipeline (and with it the packet channel) is dropped.
-            let _ = stop_tx.send(true);
-            return Err(e);
-        }
         // ---- state monitor: Filling → OnAir, Draining → Idle ----
         let monitor = {
             let me = Arc::clone(self);

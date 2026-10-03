@@ -70,6 +70,7 @@ struct Live {
 enum UiEvent {
     Error(String),
     PreviewStarted(Result<(), String>),
+    GoLiveDone(Result<(), String>),
     Devices(Vec<DeviceInfo>),
     Info(String),
 }
@@ -104,6 +105,9 @@ pub struct App {
     preview_input: Option<restream_core::config::Input>,
     preview_dirty_since: Option<Instant>,
     preview_starting: bool,
+    /// Set while a Go Live is in flight so the idle preview does not restart
+    /// in the gap between its shutdown and the session's start.
+    going_live: bool,
 }
 
 impl App {
@@ -145,6 +149,7 @@ impl App {
             preview_input: None,
             preview_dirty_since: None,
             preview_starting: false,
+            going_live: false,
         };
         app.refresh_devices();
         // Developer conveniences: `restream --go-live [--monitor]`
@@ -178,11 +183,11 @@ impl App {
         let engine = Arc::clone(&self.engine);
         let tx = self.ui_tx.clone();
         let monitor = self.monitor_on;
+        self.going_live = true;
         self.rt.spawn(async move {
             engine.set_monitor(monitor).await;
-            if let Err(e) = engine.go_live().await {
-                let _ = tx.send(UiEvent::Error(format!("Go Live failed: {e:#}")));
-            }
+            let r = engine.go_live().await.map_err(|e| format!("Go Live failed: {e:#}"));
+            let _ = tx.send(UiEvent::GoLiveDone(r));
         });
         self.live = Live::default();
         self.preview_input = None;
@@ -230,6 +235,9 @@ impl App {
     /// start it when idle, restart it ~0.7 s after the input settings change,
     /// stop it when unwanted.
     fn tick_input_preview(&mut self) {
+        if self.going_live {
+            return;
+        }
         let idle = self.engine.state() == EngineState::Idle;
         let running = self.engine.input_preview_running();
         if !idle || !self.preview_wanted {
@@ -347,6 +355,12 @@ impl App {
                 UiEvent::Devices(d) => {
                     self.devices = d;
                     self.devices_loading = false;
+                }
+                UiEvent::GoLiveDone(r) => {
+                    self.going_live = false;
+                    if let Err(e) = r {
+                        self.toast(e, true);
+                    }
                 }
                 UiEvent::PreviewStarted(r) => {
                     self.preview_starting = false;
