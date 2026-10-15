@@ -3372,7 +3372,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "restream-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "restream-core",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "restream-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3406,7 +3406,7 @@ dependencies = [
 
 [[package]]
 name = "restream-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3426,11 +3426,11 @@ dependencies = [
 
 [[package]]
 name = "restream-launcher"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "restream-rtmp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",

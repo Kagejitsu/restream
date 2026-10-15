@@ -80,6 +80,28 @@ pub struct Input {
     pub audio_offset_ms: i64,
     /// Burn a running-time clock into the picture (sync testing / rehearsal).
     pub burn_in_clock: bool,
+    /// Program audio gain in dB, applied before the encoder (so streams,
+    /// recording and meters all reflect it). Tunable live.
+    pub gain_db: f32,
+    /// Play the program audio to a local output device.
+    pub monitor: AudioMonitor,
+}
+
+/// Local audio monitoring of the program (post-gain, undelayed).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AudioMonitor {
+    pub enabled: bool,
+    /// Output device id ("" = system default; "fake" = discard, for tests).
+    pub device: String,
+    /// Monitor volume in dB (does not affect the stream).
+    pub volume_db: f32,
+}
+
+impl Default for AudioMonitor {
+    fn default() -> Self {
+        Self { enabled: false, device: String::new(), volume_db: 0.0 }
+    }
 }
 
 impl Default for Input {
@@ -88,6 +110,8 @@ impl Default for Input {
             video: VideoSource::Test { pattern: "smpte".into() },
             audio: AudioSource::Test,
             audio_offset_ms: 0,
+            gain_db: 0.0,
+            monitor: AudioMonitor::default(),
             burn_in_clock: false,
         }
     }

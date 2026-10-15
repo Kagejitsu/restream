@@ -262,7 +262,7 @@ impl App {
         if self.preview_starting {
             return;
         }
-        let changed = self.preview_input.as_ref() != Some(&self.profile.input);
+        let changed = self.preview_input.as_ref().map(input_signature) != Some(input_signature(&self.profile.input));
         if running && changed {
             match self.preview_dirty_since {
                 None => self.preview_dirty_since = Some(Instant::now()),
@@ -585,6 +585,37 @@ impl App {
             ui.label(format!("Encoder {:.0} fps  {:.0} kbps video  {:.0} kbps audio", self.live.video_fps, self.live.video_kbps, self.live.audio_kbps));
             ui.separator();
             audio_meter(ui, &self.live.rms_db, &self.live.peak_db);
+            ui.separator();
+            ui.label("Gain");
+            let mut gain = self.profile.input.gain_db;
+            if ui.add(egui::DragValue::new(&mut gain).range(-30.0..=20.0).speed(0.25).fixed_decimals(1).suffix(" dB"))
+                .on_hover_text("Program audio gain: applies to every stream, the recording and the meters. Live.")
+                .changed()
+            {
+                self.profile.input.gain_db = gain;
+                self.engine.set_audio_gain_db(gain);
+            }
+            if gain != 0.0 && ui.small_button("0").on_hover_text("reset to 0 dB").clicked() {
+                self.profile.input.gain_db = 0.0;
+                self.engine.set_audio_gain_db(0.0);
+            }
+            ui.separator();
+            let mut mon = self.profile.input.monitor.enabled;
+            if ui.checkbox(&mut mon, "Monitor").on_hover_text("Play the program audio on the output device chosen in the Input tab").changed() {
+                self.profile.input.monitor.enabled = mon;
+                let m = self.profile.input.monitor.clone();
+                self.engine.set_audio_monitor(m.enabled, m.device, m.volume_db);
+            }
+            if mon {
+                let mut vol = self.profile.input.monitor.volume_db;
+                if ui.add(egui::DragValue::new(&mut vol).range(-60.0..=12.0).speed(0.5).fixed_decimals(0).suffix(" dB"))
+                    .on_hover_text("Monitor volume (does not affect the stream)")
+                    .changed()
+                {
+                    self.profile.input.monitor.volume_db = vol;
+                    self.engine.set_audio_monitor_volume_db(vol);
+                }
+            }
         });
         ui.horizontal_wrapped(|ui| {
             for (i, d) in self.profile.destinations.iter().enumerate() {
@@ -773,6 +804,44 @@ impl App {
             ui.add(egui::DragValue::new(&mut self.profile.input.audio_offset_ms).range(-2000..=2000).speed(5));
             ui.label(RichText::new("positive = audio later").weak());
         });
+        ui.separator();
+        ui.heading("Program gain and monitor");
+        ui.horizontal(|ui| {
+            ui.label("Gain (dB)");
+            let mut gain = self.profile.input.gain_db;
+            if ui.add(egui::DragValue::new(&mut gain).range(-30.0..=20.0).speed(0.25).fixed_decimals(1)).changed() {
+                self.profile.input.gain_db = gain;
+                self.engine.set_audio_gain_db(gain);
+            }
+            ui.label(RichText::new("applied before the encoder: streams, recording and meters all follow it").weak());
+        });
+        let mut mon_changed = false;
+        ui.horizontal(|ui| {
+            mon_changed |= ui.checkbox(&mut self.profile.input.monitor.enabled, "Monitor the program audio on this device:").changed();
+        });
+        {
+            let mut dev = self.profile.input.monitor.device.clone();
+            let before = dev.clone();
+            sink_picker(ui, &self.devices, &mut dev, self.devices_loading);
+            if dev != before {
+                self.profile.input.monitor.device = dev;
+                mon_changed = true;
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label("Monitor volume (dB)");
+            let mut vol = self.profile.input.monitor.volume_db;
+            if ui.add(egui::DragValue::new(&mut vol).range(-60.0..=12.0).speed(0.5).fixed_decimals(0)).changed() {
+                self.profile.input.monitor.volume_db = vol;
+                self.engine.set_audio_monitor_volume_db(vol);
+            }
+            ui.label(RichText::new("monitor only; the stream is unaffected").weak());
+        });
+        if mon_changed {
+            let m = self.profile.input.monitor.clone();
+            self.engine.set_audio_monitor(m.enabled, m.device, m.volume_db);
+        }
+        ui.separator();
         ui.checkbox(&mut self.profile.input.burn_in_clock, "TEST ONLY: burn a timecode clock into the picture (viewers and recordings will see it)")
             .on_hover_text("For rehearsals: proves every platform shows the same frame and that the delay holds. Turn it off for real shows.");
         if self.profile.input.burn_in_clock {
@@ -1214,6 +1283,39 @@ fn device_picker<'a>(ui: &mut egui::Ui, class: &str, devices: &'a [DeviceInfo], 
         ui.text_edit_singleline(value);
     });
     chosen
+}
+
+/// Output devices (class "Audio/Sink") for the monitor.
+fn sink_picker(ui: &mut egui::Ui, devices: &[DeviceInfo], value: &mut String, loading: bool) {
+    let list: Vec<&DeviceInfo> = devices.iter().filter(|d| d.class.contains("Audio") && d.class.contains("Sink")).collect();
+    ui.horizontal(|ui| {
+        ui.label("Output");
+        let selected = list.iter().find(|d| device_id(d).as_deref() == Some(value.as_str())).map(|d| d.display_name.clone()).unwrap_or_else(|| if value.is_empty() { "(system default)".into() } else { value.clone() });
+        egui::ComboBox::from_id_salt("monitor-sink").selected_text(selected).width(300.0).show_ui(ui, |ui| {
+            if loading {
+                ui.label("scanning…");
+            }
+            if ui.selectable_label(value.is_empty(), "(system default)").clicked() {
+                value.clear();
+            }
+            for d in &list {
+                if let Some(id) = device_id(d)
+                    && ui.selectable_label(*value == id, &d.display_name).clicked()
+                {
+                    *value = id;
+                }
+            }
+        });
+    });
+}
+
+/// The parts of `Input` whose change requires reopening devices (gain and
+/// monitor are applied live and must not restart the preview).
+fn input_signature(i: &restream_core::config::Input) -> restream_core::config::Input {
+    let mut c = i.clone();
+    c.gain_db = 0.0;
+    c.monitor = Default::default();
+    c
 }
 
 /// Best-effort device identifier for the source element's selection property.

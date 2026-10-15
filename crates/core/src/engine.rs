@@ -71,6 +71,8 @@ pub struct Engine {
     session: tokio::sync::Mutex<Option<Session>>,
     /// Input preview while idle (never alive at the same time as a session).
     input_preview: Mutex<Option<PreviewPipeline>>,
+    /// Local audio monitor branch, attached to whichever pipeline is live.
+    audio_monitor: Mutex<Option<crate::audio_monitor::MonitorBranch>>,
 }
 
 impl Engine {
@@ -87,6 +89,7 @@ impl Engine {
             monitor_enabled: AtomicBool::new(false),
             session: tokio::sync::Mutex::new(None),
             input_preview: Mutex::new(None),
+            audio_monitor: Mutex::new(None),
         })
     }
 
@@ -164,12 +167,75 @@ impl Engine {
         }
         let profile = self.profile.lock().clone();
         let p = PreviewPipeline::start(&profile, Arc::clone(&self.preview), self.stats.clone())?;
+        let gst_p = p.gst().clone();
         *slot = Some(p);
+        drop(slot);
+        self.attach_audio_monitor_to(&gst_p);
         Ok(())
+    }
+
+    /// (Re)attach the audio monitor to `pipeline` according to the profile.
+    fn attach_audio_monitor_to(&self, pipeline: &gstreamer::Pipeline) {
+        self.detach_audio_monitor();
+        let m = self.profile.lock().input.monitor.clone();
+        if !m.enabled {
+            return;
+        }
+        match crate::audio_monitor::MonitorBranch::start(pipeline, &m.device, m.volume_db) {
+            Ok(b) => *self.audio_monitor.lock() = Some(b),
+            Err(e) => {
+                warn!(target: "engine", "audio monitor: {e:#}");
+                self.stats.emit(StatsEvent::Warning(format!("audio monitor: {e:#}")));
+            }
+        }
+    }
+
+    fn detach_audio_monitor(&self) {
+        if let Some(b) = self.audio_monitor.lock().take() {
+            b.stop();
+        }
+    }
+
+    /// The pipeline currently carrying audio (session, else idle preview).
+    fn active_audio_pipeline(&self) -> Option<gstreamer::Pipeline> {
+        if let Some(s) = self.session.try_lock().ok().and_then(|g| g.as_ref().map(|s| s.pipeline.gst().clone())) {
+            return Some(s);
+        }
+        self.input_preview.lock().as_ref().map(|p| p.gst().clone())
+    }
+
+    /// Program gain, live. Blocking-safe (no awaits).
+    pub fn set_audio_gain_db(&self, db: f32) {
+        self.profile.lock().input.gain_db = db;
+        if let Some(p) = self.active_audio_pipeline() {
+            crate::pipeline::set_gain(&p, db);
+        }
+    }
+
+    /// Enable/disable the local audio monitor or change its device, live.
+    pub fn set_audio_monitor(&self, enabled: bool, device: String, volume_db: f32) {
+        {
+            let mut p = self.profile.lock();
+            p.input.monitor.enabled = enabled;
+            p.input.monitor.device = device;
+            p.input.monitor.volume_db = volume_db;
+        }
+        match self.active_audio_pipeline() {
+            Some(p) => self.attach_audio_monitor_to(&p),
+            None => self.detach_audio_monitor(),
+        }
+    }
+
+    pub fn set_audio_monitor_volume_db(&self, db: f32) {
+        self.profile.lock().input.monitor.volume_db = db;
+        if let Some(b) = self.audio_monitor.lock().as_ref() {
+            b.set_volume_db(db);
+        }
     }
 
     /// Stop the idle input preview and release the devices. Blocking.
     pub fn stop_input_preview(&self) {
+        self.detach_audio_monitor();
         if let Some(mut p) = self.input_preview.lock().take() {
             p.stop();
         }
@@ -368,9 +434,14 @@ impl Engine {
             let _ = cmd_tx.send(ReleaseCommand::AttachTap(tx));
         }
         *guard = Some(Session { pipeline, releaser, dest_tasks, cmd_tx, stop_tx, monitor, recorder, rec_ticker });
+        let session_gst = guard.as_ref().map(|s| s.pipeline.gst().clone());
         self.state.send_replace(EngineState::Filling);
         info!(target: "engine", "session started: delay {}s", profile.delay.seconds);
         self.stats.emit(session_specs);
+        drop(guard);
+        if let Some(p) = session_gst {
+            self.attach_audio_monitor_to(&p);
+        }
         Ok(())
     }
 
@@ -500,6 +571,7 @@ impl Engine {
             // pipeline EOS has already finalised any recording; just collect it.
             let container = self.profile.lock().recording.container.clone();
             let recorder = Arc::clone(&s.recorder);
+            self.detach_audio_monitor();
             let pending = tokio::task::spawn_blocking(move || {
                 s.pipeline.stop();
                 recorder.lock().take().map(|b| (b.files(), b.has_audio()))

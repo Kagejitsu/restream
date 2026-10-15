@@ -318,6 +318,11 @@ impl Pipeline {
         }
     }
 
+    /// Live program gain.
+    pub fn set_audio_gain_db(&self, db: f32) {
+        set_gain(&self.pipeline, db);
+    }
+
     pub fn stop(&mut self) {
         if self.bus_stop.swap(true, Ordering::Relaxed) {
             return; // already stopped
@@ -347,7 +352,22 @@ pub struct PreviewPipeline {
     bus_thread: Option<JoinHandle<()>>,
 }
 
+/// Set the `gain` volume element of any pipeline that has one.
+pub fn set_gain(pipeline: &gst::Pipeline, db: f32) {
+    if let Some(g) = pipeline.by_name("gain") {
+        g.set_property("volume", crate::audio_monitor::db_to_linear(db));
+    }
+}
+
 impl PreviewPipeline {
+    pub fn gst(&self) -> &gst::Pipeline {
+        &self.pipeline
+    }
+
+    pub fn set_audio_gain_db(&self, db: f32) {
+        set_gain(&self.pipeline, db);
+    }
+
     pub fn start(profile: &Profile, preview: Arc<PreviewSlot>, stats: StatsBus) -> Result<Self> {
         let (vsrc, asrc) = sources(profile)?;
         let mut d = format!(
@@ -357,7 +377,14 @@ impl PreviewPipeline {
             ph = PREVIEW_HEIGHT,
         );
         if let Some(asrc) = asrc {
-            d.push_str(&format!(" {asrc} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 leaky=downstream ! audioconvert ! level name=lvl interval=100000000 ! fakesink sync=false"));
+            d.push_str(&format!(
+                " {asrc} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 leaky=downstream ! audioconvert ! audioresample \
+                 ! audio/x-raw,rate={rate},channels={ch} ! volume name=gain volume={gain} ! tee name=at \
+                 at. ! queue ! level name=lvl interval=100000000 ! fakesink sync=false",
+                rate = profile.encoder.audio_sample_rate,
+                ch = profile.encoder.audio_channels,
+                gain = crate::audio_monitor::db_to_linear(profile.input.gain_db),
+            ));
         }
         debug!(target: "preview", "launch: {d}");
         let pipeline = gst::parse::launch(&d)
@@ -581,12 +608,13 @@ fn describe(profile: &Profile, venc: &str, aenc: Option<&str>) -> Result<String>
     // audio
     if let (Some(asrc), Some(aenc)) = (asrc, aenc) {
         d.push_str(&format!(
-            " {asrc} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 leaky=downstream ! audioconvert ! audioresample ! audio/x-raw,rate={rate},channels={ch} ! identity name=aoff ! tee name=at \
+            " {asrc} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=500000000 leaky=downstream ! audioconvert ! audioresample ! audio/x-raw,rate={rate},channels={ch} ! identity name=aoff ! volume name=gain volume={gain} ! tee name=at \
              at. ! queue ! level name=lvl interval=100000000 ! fakesink sync=false \
              at. ! queue ! {aenc} name=aenc ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! tee name=eat \
              eat. ! queue ! flv.audio ",
             rate = e.audio_sample_rate,
             ch = e.audio_channels,
+            gain = crate::audio_monitor::db_to_linear(profile.input.gain_db),
         ));
     }
     // single interleaved FLV stream → Rust core

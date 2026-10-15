@@ -12,6 +12,7 @@
 //! [`engine::Engine`] owns all of it and exposes the Go-Live / Stop / Cut
 //! state machine that both the GUI and the CLI drive.
 
+pub mod audio_monitor;
 pub mod config;
 pub mod delay;
 pub mod devices;

@@ -261,3 +261,49 @@ async fn mp4_remux_without_audio_does_not_block_idle() {
     assert!((2.5..4.5).contains(&probe_duration(&files[0])));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gain_changes_meter_and_monitor_attaches_live() {
+    restream_core::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("restream-gaintest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let engine = Engine::new(test_profile(&dir, "mkv"));
+    let mut stats = engine.stats();
+    async fn rms(stats: &mut tokio::sync::broadcast::Receiver<restream_core::StatsEvent>) -> f64 {
+        // drop queued (stale) events, then average the next 5 fresh meter readings
+        while stats.try_recv().is_ok() {}
+        let mut v = Vec::new();
+        while v.len() < 5 {
+            if let Ok(restream_core::StatsEvent::AudioLevel { rms_db, .. }) = stats.recv().await
+                && let Some(x) = rms_db.first()
+            {
+                v.push(*x);
+            }
+        }
+        v.iter().sum::<f64>() / v.len() as f64
+    }
+    // idle preview first: gain and monitor must work there too
+    engine.start_input_preview().unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let base = rms(&mut stats).await;
+    engine.set_audio_gain_db(-20.0);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let quiet = rms(&mut stats).await;
+    eprintln!("preview rms: 0 dB → {base:.1}, -20 dB → {quiet:.1}");
+    assert!((base - quiet - 20.0).abs() < 2.0, "gain not reflected in meter: {base:.1} vs {quiet:.1}");
+    engine.set_audio_monitor(true, "fake".into(), -6.0);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    engine.set_audio_monitor_volume_db(-12.0);
+    // go live: monitor moves to the session pipeline, gain persists
+    engine.go_live().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let live = rms(&mut stats).await;
+    assert!((live - quiet).abs() < 2.0, "gain lost across go-live: {live:.1} vs {quiet:.1}");
+    engine.set_audio_monitor(false, "fake".into(), -12.0);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    engine.set_audio_monitor(true, "fake".into(), -12.0);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    engine.stop_cut().await.unwrap();
+    engine.wait_idle().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

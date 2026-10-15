@@ -1,7 +1,7 @@
 ; Inno Setup script for Restream. Build dist\ first (tools\win-bundle.ps1),
 ; then compile this with ISCC.exe (Inno Setup 6).
 #define AppName "Restream"
-#define AppVersion "0.1.0"
+#define AppVersion "0.2.0"
 
 [Setup]
 AppId={{B7F0D8F2-3C7E-4D0B-9F3A-RESTREAM0001}

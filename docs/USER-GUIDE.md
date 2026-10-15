@@ -40,6 +40,15 @@ connect about three seconds before the first frame goes out.
 **Audio offset** (Input tab) shifts audio relative to video in milliseconds and
 can be changed live. Positive = audio later.
 
+**Program gain** (Input tab, and the *Gain* box in the status bar) adjusts the
+audio level in dB before the encoder, so every stream, the recording and the
+meters follow it. Live.
+
+**Audio monitor** plays the program audio (after gain, undelayed) on an output
+device you choose in the Input tab: headphones, a second interface, a virtual
+cable. The *Monitor* tick box and its volume in the status bar work live; the
+monitor volume never affects the stream.
+
 **TEST ONLY: burn a timecode clock** overlays a running clock on the picture,
 visible to every viewer and in recordings. Use it in a rehearsal to check that
 all platforms show the same time and that the delay is what you expect, then

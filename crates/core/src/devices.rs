@@ -22,11 +22,12 @@ pub struct DeviceInfo {
     pub formats: Vec<String>,
 }
 
-/// Enumerate video and audio capture devices.
+/// Enumerate video and audio capture devices and audio output devices.
 pub fn enumerate() -> Vec<DeviceInfo> {
     let monitor = gst::DeviceMonitor::new();
     monitor.add_filter(Some("Video/Source"), None);
     monitor.add_filter(Some("Audio/Source"), None);
+    monitor.add_filter(Some("Audio/Sink"), None);
     if let Err(e) = monitor.start() {
         tracing::warn!("device monitor failed to start: {e}");
         return Vec::new();
